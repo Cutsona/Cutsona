@@ -3,38 +3,39 @@
 <p align="center"><b>Turn your clips and a song into beat-synced edits.</b><br>
 Cutsona cuts four different versions at once, plays them side by side, and exports the one you like.</p>
 
+<p align="center"><a href="https://github.com/Cutsona/Cutsona/releases/latest"><b>Download for Windows</b></a> · <a href="docs/GUIDE.md">Guide</a> · <a href="LICENSE">MIT license</a></p>
+
 <p align="center"><img src="brand/screenshot.png" alt="Cutsona, ready for clips, with four empty takes side by side" width="900"></p>
 
 ## What it does
 
 - **Four takes at once.** Add clips and a song, and Cutsona cuts four different edits that play live, side by side. Don't like one? Press **⟳** for a new take.
 - **Cuts on the beat.** Every cut, zoom and effect lands on the song's beats and drops.
-- **Clips Twitch and Kick streams.** **Stream clips** finds a stream's best moments (starting with the ones viewers already clipped) and turns each into a clip ready to post: laid out for phones with the streamer's cam on top, dead air cut out, word-by-word captions and a title.
+- **Clips Twitch and Kick streams.** **Stream clips** finds a stream's best moments (starting with the ones viewers already clipped) and turns each into a clip ready to post: streamer's cam on top, dead air cut out, word-by-word captions and a title. **Export all** saves every one of them.
 - **Finds clips and songs for you.** YouTube, Twitch and Kick clips, exact movie moments, gaming, news and free stock footage, plus free music.
-- **Keeps people in frame.** When a wide clip goes vertical, auto-framing follows the person in it.
-- **Finishes the video.** Captions, watermarks, keyframes and fades, then export an MP4 from 360p to 4K.
-- **Updates itself.** When a new version is out, an **Update** button shows what's new and installs it.
+- **Tells you what might get claimed.** The copyright check shows who owns each clip and song, how likely a post is to be muted or taken down, and the credits to paste.
+- **Fits TikTok, Reels and Shorts.** Safe zones show where each app's buttons and captions will cover your video.
+- **Finishes the video.** Captions, watermarks, keyframes and fades, then an MP4 from 360p to 4K.
+- **Keeps your work.** Save projects and open them again later, with undo and redo for everything.
 
 ## Install
 
 Cutsona runs on Windows 10 and 11.
 
-1. Open **PowerShell**: press Start, type `PowerShell`, press Enter.
-2. Paste this and press Enter:
+1. Download **Cutsona-Setup** (the .exe file) from the [latest release](https://github.com/Cutsona/Cutsona/releases/latest).
+2. Open it. Cutsona installs for your account (no admin needed) and opens.
 
-   ```powershell
-   irm https://raw.githubusercontent.com/Cutsona/Cutsona/main/install.ps1 | iex
-   ```
+That's it: FFmpeg and yt-dlp come with it, and new versions arrive through the **Update** button in the app.
 
-The installer gets whatever's missing (Git, Node.js, FFmpeg and the speech tools for captions), puts Cutsona in your user folder, adds it to your Desktop and Start menu, and opens it. The first install takes a few minutes.
+> **"Windows protected your PC"?** The installer isn't code-signed yet, so Windows doesn't know it. Press **More info**, then **Run anyway**. Everything Cutsona does is in this repository for anyone to check.
 
-Already have the Cutsona folder? Double-click **Install.cmd** inside it.
+For captions, open **Settings → Captions and speech** and press **Set up speech tools** once (it needs [Python](https://www.python.org/downloads/)).
 
 ## Use it
 
 1. **Add clips.** Drop video files in, or press **Find clips**.
 2. **Add a song.** Drop an MP3, or press **Find songs**.
-3. **Pick a take and export it.** Your MP4 is saved to the exports folder, which you can change in **Settings**.
+3. **Pick a take and export it.** Your MP4 is saved to `Videos\Cutsona`, which you can change in **Settings**.
 
 Clipping a stream instead? Switch to **Stream clips** at the top left, then paste a Twitch or Kick link, or pick one in **Find clips → Streamers**.
 
@@ -44,10 +45,11 @@ Clipping a stream instead? Switch to **Stream clips** at the top left, then past
 | G | New takes of all four |
 | R | New take of the selected one |
 | E | Export the selected one |
+| Ctrl+Z / Ctrl+Y | Undo / redo |
+| Ctrl+S | Save the project |
 
-## More
+## Open source
 
-- [Guide](docs/GUIDE.md): every feature, framing, captions, and how Cutsona picks moments
-- [Running the repo](docs/MAINTAINING.md): publishing updates and the logo files
+Cutsona is free and open source under the [MIT license](LICENSE). Bug reports, ideas and pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md) shows how to run it from the code. It's built on FFmpeg, yt-dlp, Electron, MediaPipe and Whisper ([third-party notices](THIRD-PARTY-NOTICES.md)).
 
-See the [license](LICENSE) for how Cutsona may be used. It's built on open-source tools like FFmpeg, yt-dlp and Whisper; the full list is in **Settings → Credits**. You're responsible for the clips you download and post.
+Clips and songs belong to the people who made them. You're responsible for what you download and post.

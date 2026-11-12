@@ -9,22 +9,26 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
 const ROOT = __dirname;
-const transcription = require('./transcription.js')(ROOT);
+// Where Cutsona keeps what it makes and downloads. A copy from GitHub keeps it all in its own folder; the
+// desktop app keeps it in the user's app-data folder (CUTSONA_DATA) and exports in Videos (CUTSONA_EXPORTS).
+const DATA = process.env.CUTSONA_DATA ? path.resolve(process.env.CUTSONA_DATA) : ROOT;
+const transcription = require('./transcription.js')(ROOT, DATA);
 const APP_DIR = path.join(ROOT, 'app');
-const CACHE_DIR = path.join(ROOT, 'cache');
-const DEFAULT_EXPORT_DIR = path.join(ROOT, 'exports');
-const TMP_DIR = path.join(DEFAULT_EXPORT_DIR, '.tmp'); // export parts always land here; only the finished MP4 goes to your folder
-const BIN_DIR = path.join(ROOT, 'bin');
+const CACHE_DIR = path.join(DATA, 'cache');
+const DEFAULT_EXPORT_DIR = process.env.CUTSONA_EXPORTS ? path.resolve(process.env.CUTSONA_EXPORTS) : path.join(DATA, 'exports');
+const TMP_DIR = path.join(CACHE_DIR, 'export-parts'); // export parts always land here; only the finished MP4 goes to your folder
+const BIN_DIR = path.join(DATA, 'bin');
+const PROJECTS_DIR = path.join(DATA, 'projects'), MEDIA_DIR = path.join(PROJECTS_DIR, 'media');
 const makePreview = require('./preview.js')(CACHE_DIR, runFfmpeg);
 const YTDLP = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36';
-for (const d of [CACHE_DIR, DEFAULT_EXPORT_DIR, TMP_DIR]) fs.mkdirSync(d, { recursive: true });
+for (const d of [CACHE_DIR, DEFAULT_EXPORT_DIR, TMP_DIR, MEDIA_DIR]) fs.mkdirSync(d, { recursive: true });
 // updates from the GitHub repo in version.json (see updater.js)
 const updater = require('./updater.js')({ root: ROOT, curl: (...a) => curl(...a), ua: 'Cutsona-updater' });
 
 // App settings kept on this PC (cutsona-settings.json, never published): where finished videos are saved.
-const SETTINGS_FILE = path.join(ROOT, 'cutsona-settings.json');
-try { const was = path.join(ROOT, 'slax-settings.json'); if (!fs.existsSync(SETTINGS_FILE) && fs.existsSync(was)) fs.renameSync(was, SETTINGS_FILE); } catch {} // from before the rename
+const SETTINGS_FILE = path.join(DATA, 'cutsona-settings.json');
+try { const was = path.join(DATA, 'slax-settings.json'); if (!fs.existsSync(SETTINGS_FILE) && fs.existsSync(was)) fs.renameSync(was, SETTINGS_FILE); } catch {} // from before the rename
 let appSettings = {};
 try { appSettings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) || {}; } catch {}
 function usableDir(d) {
@@ -61,6 +65,10 @@ function pickFolder(start) {
 }
 
 const NO_BROWSER = process.argv.includes('--no-browser');
+// run by the desktop app (desktop/main.js): it owns the window and decides when Cutsona closes
+const HOSTED = !!process.env.CUTSONA_HOSTED;
+// inside the desktop app, process.execPath is Cutsona.exe: tools that run it as Node need it to behave as Node
+const NODE_ENV_FOR_TOOLS = process.versions.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' } : process.env;
 const START_PORT = Number(process.env.CUTSONA_PORT || 4870);
 
 const MIME = {
@@ -71,7 +79,7 @@ const MIME = {
 };
 
 // ---- auto-focus models (MediaPipe face + person detectors), downloaded once on first use ----
-const VISION_DIR = path.join(__dirname, 'bin', 'vision');
+const VISION_DIR = path.join(BIN_DIR, 'vision');
 const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const VISION_FILES = [
   ['vision_bundle.mjs', `${MP}/vision_bundle.mjs`],
@@ -104,7 +112,22 @@ function ensureVision() {
   return visionReady;
 }
 
-let FFMPEG = 'ffmpeg';
+// FFmpeg: the copy the desktop app ships with (CUTSONA_FFMPEG), else one in bin/, else the one on PATH
+let FFMPEG = process.env.CUTSONA_FFMPEG && fs.existsSync(process.env.CUTSONA_FFMPEG) ? process.env.CUTSONA_FFMPEG
+  : fs.existsSync(path.join(BIN_DIR, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg')) ? path.join(BIN_DIR, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg') : 'ffmpeg';
+// a video's (or photo's) first picture stream, read from what `ffmpeg -i` prints: { codec, w, h } or null
+// (ffmpeg alone is enough, so the desktop app doesn't have to ship ffprobe as well)
+function probeStream(file) {
+  return new Promise((resolve) => {
+    execFile(FFMPEG, ['-hide_banner', '-i', file], { windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (_err, _out, errOut) => {
+      const line = String(errOut || '').split(/\r?\n/).find((l) => /Stream #\d+:\d+.*: Video: /.test(l));
+      if (!line) return resolve(null);
+      const codec = (/: Video: ([a-z0-9_]+)/i.exec(line) || [])[1] || null;
+      const sz = /,\s*(\d{1,5})x(\d{1,5})[\s,\[]/.exec(line + ' ');
+      resolve({ codec, w: sz ? Number(sz[1]) : 0, h: sz ? Number(sz[2]) : 0 });
+    });
+  });
+}
 let ffmpegOk = false;
 function checkFfmpeg() {
   return new Promise((res) => {
@@ -261,6 +284,9 @@ function download(url, dest, redirects = 8) {
 let ytdlpPromise = null;
 function ensureYtdlp() {
   if (fs.existsSync(YTDLP)) return Promise.resolve();
+  // the desktop app ships yt-dlp: copy it where it can keep itself up to date (sites change, yt-dlp follows)
+  const seed = process.env.CUTSONA_YTDLP_SEED;
+  if (seed && fs.existsSync(seed)) { try { fs.mkdirSync(BIN_DIR, { recursive: true }); fs.copyFileSync(seed, YTDLP); return Promise.resolve(); } catch {} }
   if (!ytdlpPromise) {
     fs.mkdirSync(BIN_DIR, { recursive: true });
     const asset = process.platform === 'win32' ? 'yt-dlp.exe' : process.platform === 'darwin' ? 'yt-dlp_macos' : 'yt-dlp_linux';
@@ -282,7 +308,7 @@ function updateYtdlpIfOld() {
 
 function runYtdlp(args, onLine) {
   return new Promise((resolve, reject) => {
-    const p = spawn(YTDLP, ['--no-warnings', '--no-color', '--js-runtimes', `node:${process.execPath}`, ...args], { windowsHide: true });
+    const p = spawn(YTDLP, ['--no-warnings', '--no-color', '--js-runtimes', `node:${process.execPath}`, ...args], { windowsHide: true, env: NODE_ENV_FOR_TOOLS });
     let out = '', err = '', buf = '';
     p.stdout.on('data', (d) => {
       const s = d.toString();
@@ -358,8 +384,158 @@ function friendlyGrabError(msg, url = '') {
 const REDDIT_LINK = /^https?:\/\/(?:[\w-]+\.)?(?:reddit\.com|redd\.it)\//i;
 const REDDIT_MSG = 'Reddit blocks apps from downloading its videos. Open the post: if the video is from YouTube, Twitch, Kick, Streamable or another site, paste that link instead.';
 
+// ---- speech tools: a Python environment with faster-whisper, set up from Settings with one button ----
+const speechJob = { busy: false, phase: '', error: '', needPython: false, done: false };
+const runQuiet = (cmd, args, ms = 15 * 60000) => new Promise((resolve, reject) => {
+  execFile(cmd, args, { windowsHide: true, timeout: ms, maxBuffer: 16 * 1024 * 1024 }, (err, out, errOut) => (err ? reject(new Error(String(errOut || err.message).trim().split(/\r?\n/).pop())) : resolve(String(out).trim())));
+});
+async function findPython() {
+  const tries = [];
+  if (process.platform === 'win32') {
+    for (const v of ['3.12', '3.11', '3.10']) tries.push(['py', [`-${v}`, '-c', 'import sys; print(sys.executable)']]);
+    for (const v of ['312', '311', '310']) tries.push([path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', `Python${v}`, 'python.exe'), ['-c', 'import sys; print(sys.executable)']]);
+  } else for (const c of ['python3.12', 'python3.11', 'python3.10', 'python3']) tries.push([c, ['-c', 'import sys; print(sys.executable)']]);
+  for (const [cmd, args] of tries) {
+    try { const exe = await runQuiet(cmd, args, 20000); if (exe && fs.existsSync(exe)) return exe; } catch {}
+  }
+  return null;
+}
+async function setupSpeech() {
+  Object.assign(speechJob, { busy: true, phase: 'Looking for Python', error: '', needPython: false, done: false });
+  try {
+    const venv = path.join(BIN_DIR, 'speech');
+    const py = path.join(venv, process.platform === 'win32' ? 'Scripts\\python.exe' : 'bin/python');
+    if (!fs.existsSync(py)) {
+      const base = await findPython();
+      if (!base) { speechJob.needPython = true; throw new Error('Cutsona needs Python 3.10, 3.11 or 3.12 for speech. Install it from python.org, then press Set up again.'); }
+      speechJob.phase = 'Making a place for the speech tools';
+      await runQuiet(base, ['-m', 'venv', venv]);
+    }
+    speechJob.phase = 'Downloading the speech tools (about 300 MB, a few minutes)';
+    await runQuiet(py, ['-m', 'pip', 'install', '--disable-pip-version-check', '--quiet', 'faster-whisper==1.2.1']);
+    speechJob.phase = 'Checking they work';
+    await runQuiet(py, ['-c', 'import faster_whisper'], 120000);
+    const file = path.join(DATA, 'transcription.config.json');
+    let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch {}
+    fs.writeFileSync(file, JSON.stringify({ ...cfg, python: py }, null, 2));
+    transcription.reload();
+    Object.assign(speechJob, { phase: 'Ready', done: true });
+  } catch (e) { speechJob.error = e.message || 'Setting up the speech tools didn’t work.'; speechJob.phase = ''; }
+  finally { speechJob.busy = false; }
+}
+
+// ---- projects ----
+function readJsonBig(req, limit) {
+  return new Promise((resolve, reject) => {
+    const parts = []; let n = 0;
+    req.on('data', (d) => { n += d.length; if (n > limit) { req.destroy(); reject(new Error('too big')); } else parts.push(d); });
+    req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(parts).toString('utf8') || '{}')); } catch (e) { reject(e); } });
+    req.on('error', reject);
+  });
+}
+// a clip / song reference: { cache: '/cache/x.mp4' } (copied into projects/media now) or { media: 'm_x.mp4' } (already there)
+function keepMedia(src) {
+  if (!src || typeof src !== 'object') return null;
+  if (src.media && within(MEDIA_DIR, src.media) && fs.existsSync(path.join(MEDIA_DIR, path.basename(src.media)))) return { media: path.basename(src.media) };
+  if (typeof src.cache === 'string' && src.cache.startsWith('/cache/')) {
+    const from = within(CACHE_DIR, src.cache.slice(7));
+    if (!from || !fs.existsSync(from)) return null;
+    const name = `c_${path.basename(from)}`, to = path.join(MEDIA_DIR, name);
+    if (!fs.existsSync(to)) { try { fs.linkSync(from, to); } catch { fs.copyFileSync(from, to); } }
+    return { media: name };
+  }
+  return null;
+}
+function mediaToCache(src) {
+  const name = src && src.media && path.basename(String(src.media));
+  const from = name && within(MEDIA_DIR, name);
+  if (!from || !fs.existsSync(from)) return null;
+  const to = path.join(CACHE_DIR, `proj_${name}`);
+  if (!fs.existsSync(to)) { try { fs.linkSync(from, to); } catch { fs.copyFileSync(from, to); } }
+  else { try { const now = new Date(); fs.utimesSync(to, now, now); } catch {} }
+  return `/cache/proj_${name}`;
+}
+function listProjects() {
+  const out = [];
+  for (const f of fs.readdirSync(PROJECTS_DIR)) {
+    if (!/^[a-z0-9]{6,32}\.json$/.test(f)) continue;
+    try {
+      const pr = JSON.parse(fs.readFileSync(path.join(PROJECTS_DIR, f), 'utf8'));
+      out.push({ id: pr.id, name: pr.name, savedAt: pr.savedAt, clips: (pr.doc.clips || []).length, song: pr.doc.music ? pr.doc.music.name : '', mode: pr.doc.settings?.mode || 'edits', thumb: pr.doc.thumb || '' });
+    } catch {}
+  }
+  return out.sort((a, b) => b.savedAt - a.savedAt);
+}
+// media no project uses anymore
+function pruneMedia() {
+  const used = new Set();
+  for (const f of fs.readdirSync(PROJECTS_DIR)) {
+    if (!f.endsWith('.json')) continue;
+    try { const pr = JSON.parse(fs.readFileSync(path.join(PROJECTS_DIR, f), 'utf8')); for (const it of [...(pr.doc.clips || []), pr.doc.music].filter(Boolean)) if (it.src?.media) used.add(it.src.media); } catch {}
+  }
+  for (const f of fs.readdirSync(MEDIA_DIR)) if (!used.has(f)) { try { fs.unlinkSync(path.join(MEDIA_DIR, f)); } catch {} }
+}
+
+// ---- Check sources: a tiny search on every site Find clips / Find songs uses ----
+const SOURCE_CHECKS = [
+  ['youtube', 'YouTube', 'clips', { source: 'youtube', q: 'funny moments', fast: '1' }],
+  ['twitch', 'Twitch', 'clips', { source: 'twitchtop', range: 'week', n: '6' }],
+  ['kick', 'Kick', 'clips', { source: 'kicktrend', range: 'week', n: '6' }],
+  ['moments', 'thepartwhere.com (Exact moments)', 'clips', { source: 'moments' }],
+  ['yarn', 'Yarn (movie quotes)', 'clips', { source: 'yarn', q: 'hello' }],
+  ['dailymotion', 'Dailymotion', 'clips', { source: 'dailymotion', q: 'news' }],
+  ['medal', 'Medal', 'clips', { source: 'medal' }],
+  ['giphy', 'GIPHY', 'clips', { source: 'giphy', q: 'wow' }],
+  ['pexels', 'Pexels', 'stock', { source: 'pexels', q: 'city' }, 'pexelsKey'],
+  ['pixabay', 'Pixabay', 'stock', { source: 'pixabay', q: 'city' }, 'pixabayKey'],
+  ['mixkit', 'Mixkit', 'stock', { source: 'mixkit', q: 'city' }],
+  ['destockd', 'Destockd', 'stock', { source: 'destockd', q: 'car' }],
+  ['archival', 'A/V Geeks', 'stock', { source: 'archival', q: 'car' }],
+  ['commons', 'Wikimedia Commons', 'stock', { source: 'commons', q: 'city' }],
+  ['openverse', 'Openverse', 'stock', { source: 'openverse', q: 'city' }],
+  ['fma', 'Free Music Archive', 'music', { source: 'fma', q: 'chill' }],
+  ['ccmixter', 'ccMixter', 'music', { source: 'ccmixter', q: 'chill' }],
+  ['iaaudio', 'Internet Archive', 'music', { source: 'iaaudio', q: 'jazz' }],
+  ['freesound', 'Freesound', 'music', { source: 'freesound', q: 'whoosh' }],
+];
+async function checkSource([key, full, , params, needsKey]) {
+  const name = full.replace(/\s*\(.*\)$/, ''); // "Yarn (movie quotes)" -> "Yarn" in the sentences
+  if (needsKey && !config[needsKey]) return { key, name: full, state: 'setup', note: `Needs your free ${name} API key: add it in Find clips → Free stock.` };
+  const t0 = Date.now();
+  try {
+    const items = await Promise.race([
+      finderSearch(new URLSearchParams({ ...params, _check: String(t0) })),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 20000)),
+    ]);
+    const ms = Date.now() - t0;
+    if (!items || !items.length) return { key, name: full, ms, state: 'empty', note: `${name} answered but sent back nothing. It may be having problems: try again later.` };
+    return { key, name: full, ms, state: ms > 9000 ? 'slow' : 'ok', note: ms > 9000 ? `${name} works but is slow right now.` : `${name} is working.` };
+  } catch (e) {
+    const ms = Date.now() - t0, m = String(e.message || '');
+    const why = m === 'timeout' ? `${name} isn’t answering` : /429|too many/i.test(m) ? `${name} is limiting requests right now` : /403|forbidden|denied/i.test(m) ? `${name} is refusing requests right now` : `${name} is down right now`;
+    return { key, name: full, ms, state: 'down', note: `${why}. That’s on ${name}’s side, not your PC: try again later.` };
+  }
+}
+// what yt-dlp knows about a video's rights: a Creative Commons license, or "Provided to YouTube by" (a label's song)
+const rightsMemo = new Map();
+async function rightsLookup(u) {
+  const file = path.join(CACHE_DIR, `rights_${crypto.createHash('sha1').update(u).digest('hex').slice(0, 16)}.json`);
+  if (rightsMemo.has(u)) return rightsMemo.get(u);
+  try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); rightsMemo.set(u, j); return j; } catch {}
+  await ensureYtdlp();
+  const j = JSON.parse(await runYtdlp(['-J', '--skip-download', '--no-playlist', '--', u]));
+  const d = String(j.description || '');
+  const out = {
+    license: j.license || '', artist: j.artist || (Array.isArray(j.artists) ? j.artists.join(', ') : '') || j.creator || '', track: j.track || '', album: j.album || '',
+    uploader: j.channel || j.uploader || '', label: (/Provided to YouTube by ([^\n]+)/.exec(d) || [])[1]?.trim() || '', autoGenerated: /Auto-generated by YouTube\./i.test(d),
+  };
+  rightsMemo.set(u, out);
+  try { fs.writeFileSync(file, JSON.stringify(out)); } catch {}
+  return out;
+}
+
 // ---- config (API keys for optional sources) ----
-const CONFIG_FILE = path.join(ROOT, 'config.json');
+const CONFIG_FILE = path.join(DATA, 'config.json');
 let config = {};
 try { config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch {}
 function saveConfig() { fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2)); }
@@ -590,8 +766,7 @@ async function commonsSearch(q, n, kind, orient, pg = 1) {
 
 function probeCodec(file) {
   return new Promise((resolve) => {
-    execFile('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', file], { windowsHide: true },
-      (err, out) => resolve(err ? null : String(out).trim()));
+    probeStream(file).then((s) => resolve(s ? s.codec : null));
   });
 }
 
@@ -1487,8 +1662,7 @@ async function grabSong(job, url, title, start, end) {
 // Turn a still photo into an 8s clip with a slow push-in, so it can be cut like video
 function probeSize(file) {
   return new Promise((resolve) => {
-    execFile('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', file], { windowsHide: true },
-      (err, out) => { const [w, h] = String(out || '').trim().split(',').map(Number); resolve(err || !w ? null : { w, h }); });
+    probeStream(file).then((s) => resolve(s && s.w ? { w: s.w, h: s.h } : null));
   });
 }
 async function photoToClip(src, out, seconds = 8) {
@@ -1572,6 +1746,74 @@ async function handle(req, res) {
       try { const i = await tpwTitles(); return json(res, 200, { titles: i.titles, memes: i.memes, sports: i.sports, count: i.count }); }
       catch (e) { return json(res, 502, { error: 'thepartwhere.com isn’t answering right now.' }); }
     }
+    // ---- projects: saved edits you can open again (projects/<id>.json + the clips and songs they use in projects/media) ----
+    if (p === '/api/projects') return json(res, 200, { projects: listProjects() });
+    if (p === '/api/projects/media' && req.method === 'POST') {
+      const ext = (path.extname(safeName(q.get('name'), 'clip.mp4')).toLowerCase().match(/^\.[a-z0-9]{2,5}$/) || ['.bin'])[0];
+      const name = `m_${uid()}${ext}`;
+      await saveBody(req, path.join(MEDIA_DIR, name));
+      return json(res, 200, { media: name });
+    }
+    if (p === '/api/projects/save' && req.method === 'POST') {
+      const body = await readJsonBig(req, 40e6);
+      const doc = body.doc;
+      if (!doc || typeof doc !== 'object') return json(res, 400, { error: 'Nothing to save.' });
+      const id = /^[a-z0-9]{6,32}$/.test(body.id || '') ? body.id : uid();
+      const name = String(body.name || 'Untitled project').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 80) || 'Untitled project';
+      // clips and songs still in the cache (which is cleaned after a few days) get a lasting copy in projects/media
+      for (const item of [...(doc.clips || []), doc.music].filter(Boolean)) item.src = keepMedia(item.src);
+      const out = { app: 'cutsona', version: 1, id, name, savedAt: Date.now(), doc };
+      fs.writeFileSync(path.join(PROJECTS_DIR, `${id}.json`), JSON.stringify(out));
+      return json(res, 200, { id, name, savedAt: out.savedAt, doc: { clips: (doc.clips || []).map((c) => ({ id: c.id, src: c.src })), music: doc.music ? { src: doc.music.src } : null } });
+    }
+    if (p === '/api/projects/open') {
+      const file = /^[a-z0-9]{6,32}$/.test(q.get('id') || '') && path.join(PROJECTS_DIR, `${q.get('id')}.json`);
+      let pr; try { pr = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return json(res, 404, { error: 'That project is gone.' }); }
+      // each clip and song gets a working copy in the cache again (previews and analysis read from there)
+      const missing = [];
+      for (const item of [...(pr.doc.clips || []), pr.doc.music].filter(Boolean)) {
+        item.url = mediaToCache(item.src);
+        if (!item.url) missing.push(item.name || 'a clip');
+      }
+      return json(res, 200, { ...pr, missing });
+    }
+    if (p === '/api/projects/rename' && req.method === 'POST') {
+      const body = await readJson(req);
+      const file = /^[a-z0-9]{6,32}$/.test(body.id || '') && path.join(PROJECTS_DIR, `${body.id}.json`);
+      try {
+        const pr = JSON.parse(fs.readFileSync(file, 'utf8'));
+        pr.name = String(body.name || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 80) || pr.name;
+        fs.writeFileSync(file, JSON.stringify(pr));
+        return json(res, 200, { id: pr.id, name: pr.name });
+      } catch { return json(res, 404, { error: 'That project is gone.' }); }
+    }
+    if (p === '/api/projects/delete' && req.method === 'POST') {
+      const id = q.get('id') || '';
+      if (!/^[a-z0-9]{6,32}$/.test(id)) return json(res, 400, { error: 'bad id' });
+      try { fs.unlinkSync(path.join(PROJECTS_DIR, `${id}.json`)); } catch {}
+      pruneMedia();
+      return json(res, 200, { ok: true });
+    }
+    // Settings → Captions and speech: Whisper runs in its own small Python environment (bin/speech)
+    if (p === '/api/speech' && req.method === 'GET') return json(res, 200, { ready: transcription.configured(), job: speechJob });
+    if (p === '/api/speech/setup' && req.method === 'POST') {
+      if (!speechJob.busy) setupSpeech().catch(() => {});
+      return json(res, 200, { job: speechJob });
+    }
+    // Settings → Check sources: is each site answering right now? (one site per request, so the list fills in as they answer)
+    if (p === '/api/sources') return json(res, 200, { sources: SOURCE_CHECKS.map(([key, name, kind]) => ({ key, name, kind })) });
+    if (p === '/api/sources/check') {
+      const s = SOURCE_CHECKS.find(([key]) => key === q.get('key'));
+      if (!s) return json(res, 404, { error: 'Unknown source.' });
+      return json(res, 200, await checkSource(s));
+    }
+    // Copyright check: what YouTube / Dailymotion say about a video (its license, a released song inside it)
+    if (p === '/api/rights') {
+      const u = String(q.get('url') || '');
+      if (!/^https:\/\/(?:(?:www|m|music)\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/|dailymotion\.com\/video\/)[A-Za-z0-9_-]+/.test(u)) return json(res, 400, { error: 'Only YouTube and Dailymotion links can be looked up.' });
+      try { return json(res, 200, await rightsLookup(u)); }
+      catch (e) { return json(res, 502, { error: 'Couldn’t look that video up right now.' }); }
+    }
     if (p === '/api/finder/status') {
       return json(res, 200, { ytdlp: fs.existsSync(YTDLP), pexels: !!config.pexelsKey, pixabay: !!config.pixabayKey });
     }
@@ -1641,6 +1883,7 @@ async function handle(req, res) {
     }
 
     // Updates: what's new on GitHub, and installing it
+    if (process.env.CUTSONA_DESKTOP_UPDATES && p.startsWith('/api/update')) return json(res, 200, { method: 'desktop' }); // the installed app updates itself
     if (p === '/api/update' && req.method === 'GET') return json(res, 200, { ...(await updater.check(q.get('force') === '1')), job: updater.status() });
     if (p === '/api/update/apply' && req.method === 'POST') {
       try {
@@ -1840,6 +2083,7 @@ function listen(port) {
   server.requestTimeout = 0;
   server.on('error', (e) => {
     if (e.code !== 'EADDRINUSE' || port >= START_PORT + 20) { console.error(e); process.exit(1); }
+    if (HOSTED) return listen(port + 1); // the desktop app keeps one engine of its own
     // Cutsona is already running there: open its window instead of starting a second copy
     const probe = http.get({ host: '127.0.0.1', port, path: '/api/ping', timeout: 2500 }, (r) => {
       let body = ''; r.on('data', (d) => { body += d; });
@@ -1856,8 +2100,9 @@ function listen(port) {
     const url = `http://localhost:${port}/`;
     const v = await checkFfmpeg();
     console.log(`Cutsona ${updater.current} running at ${url}`);
-    setTimeout(() => updater.check().catch(() => {}), 4000); // ready for the window's first look
+    if (!process.env.CUTSONA_DESKTOP_UPDATES) setTimeout(() => updater.check().catch(() => {}), 4000); // ready for the window's first look
     console.log(v ? `ffmpeg: ${v}` : 'WARNING: ffmpeg not found on PATH - exporting needs it.');
+    if (HOSTED) { process.parentPort?.postMessage({ ready: url }); return; }
     if (!NO_BROWSER && !process.env.CUTSONA_NO_WINDOW) openApp(url); // CUTSONA_NO_WINDOW: tests of the auto-shutdown
     // Shut down after the app window is closed: a few seconds after it says goodbye (unless it was only a reload),
     // or when it hasn't been heard from in 2.5 minutes (a minimized window still checks in about once a minute)
@@ -1877,7 +2122,7 @@ try { for (const f of fs.readdirSync(TMP_DIR)) fs.unlinkSync(path.join(TMP_DIR, 
 try {
   for (const f of fs.readdirSync(CACHE_DIR)) {
     const fp = path.join(CACHE_DIR, f);
-    if (Date.now() - fs.statSync(fp).mtimeMs > 4 * 864e5) fs.unlinkSync(fp);
+    try { const st = fs.statSync(fp); if (st.isFile() && Date.now() - st.mtimeMs > 4 * 864e5) fs.unlinkSync(fp); } catch {}
   }
 } catch {}
 ensureYtdlp().then(updateYtdlpIfOld).catch((e) => console.log('yt-dlp not available yet:', e.message));

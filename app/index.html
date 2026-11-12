@@ -16,11 +16,15 @@
     <img class="logo" src="brand/icon.svg" alt="" width="26" height="26">
     <span class="brand-name">Cutsona</span>
   </div>
+  <button class="proj-btn" id="btnProject" title="Projects: save this one, open another, or start a new one (Ctrl+S saves, Ctrl+O opens)"><span id="projName">Untitled project</span><small id="projState" class="proj-state"></small></button>
   <div class="status" id="status"></div>
   <div class="top-actions">
     <button class="upd-pill" id="btnUpdate" hidden title="A new version of Cutsona is out: see what's new">Update</button>
-      <button class="ghost" id="btnFolder" title="Open the folder your videos are saved in">Exports folder</button>
+    <button class="ghost icon-only" id="btnUndo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
+    <button class="ghost icon-only" id="btnRedo" title="Redo (Ctrl+Y)" aria-label="Redo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
+    <button class="ghost" id="btnFolder" title="Open the folder your videos are saved in">Exports folder</button>
     <button class="ghost icon-only" id="btnSettings" title="Settings: export folder, theme, accent color" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+    <button class="ghost stream-only" id="btnExportAll" disabled title="Export every highlight Cutsona found, one after another">Export all</button>
     <button class="primary" id="btnGenerate" disabled>New takes <kbd>G</kbd></button>
   </div>
 </header>
@@ -210,6 +214,21 @@
         </div>
       </section>
       <section class="set-sec">
+        <h4>Captions and speech</h4>
+        <div class="field"><span>Speech tools <em id="speechState"></em></span>
+          <div class="set-row"><button class="small" id="btnSpeechSetup" hidden>Set up speech tools</button><a class="small-link" id="speechPyLink" href="https://www.python.org/downloads/" target="_blank" rel="noopener noreferrer" hidden>Get Python</a></div>
+          <small class="hint-s" id="speechNote" aria-live="polite"></small>
+        </div>
+      </section>
+      <section class="set-sec">
+        <h4>Sources</h4>
+        <div class="field"><span>Is a site down, or is it you? Check every site Find clips and Find songs use.</span>
+          <div class="set-row"><button class="small" id="btnCheckSources">Check sources</button></div>
+          <small class="hint-s" id="srcNote" aria-live="polite"></small>
+          <ul class="src-list" id="srcList"></ul>
+        </div>
+      </section>
+      <section class="set-sec">
         <h4>Look</h4>
         <div class="field"><span>Theme</span>
           <div class="pick" id="setTheme"><button data-theme="dark">Dark</button><button data-theme="light">Light</button><button data-theme="system">Match Windows</button></div>
@@ -223,7 +242,7 @@
       </section>
     </div>
     <div class="set-b" data-pane="credits" hidden>
-      <p class="cr-intro">Cutsona is built on free, open-source software. Thank you to everyone who makes and looks after these projects.</p>
+      <p class="cr-intro">Cutsona is open source (MIT license) and built on free, open-source software. Thank you to everyone who makes and looks after these projects. <a href="https://github.com/Cutsona/Cutsona" target="_blank" rel="noopener noreferrer">Cutsona on GitHub</a></p>
       <section class="set-sec">
         <h4>Video and audio</h4>
         <ul class="cr-list">
@@ -244,8 +263,9 @@
       <section class="set-sec">
         <h4>What Cutsona runs on</h4>
         <ul class="cr-list">
+          <li><div class="cr-top"><b>Electron</b><span class="cr-lic">MIT</span></div><p>Makes Cutsona a desktop app: its window, its installer, and its updates (with electron-builder and electron-updater).</p><div class="cr-links"><a href="https://github.com/electron/electron" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://www.electronjs.org" target="_blank" rel="noopener noreferrer">Website</a><a href="https://github.com/electron-userland/electron-builder" target="_blank" rel="noopener noreferrer">electron-builder</a></div></li>
           <li><div class="cr-top"><b>Node.js</b><span class="cr-lic">MIT</span></div><p>Runs Cutsona’s engine: searching, downloading, and talking to FFmpeg and yt-dlp.</p><div class="cr-links"><a href="https://github.com/nodejs/node" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://nodejs.org" target="_blank" rel="noopener noreferrer">nodejs.org</a></div></li>
-          <li><div class="cr-top"><b>Chromium</b><span class="cr-lic">BSD</span></div><p>The engine behind the Cutsona window (through Chrome or Edge): video playback and WebGL effects.</p><div class="cr-links"><a href="https://github.com/chromium/chromium" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://www.chromium.org" target="_blank" rel="noopener noreferrer">chromium.org</a></div></li>
+          <li><div class="cr-top"><b>Chromium</b><span class="cr-lic">BSD</span></div><p>Draws the Cutsona window: video playback and WebGL effects.</p><div class="cr-links"><a href="https://github.com/chromium/chromium" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://www.chromium.org" target="_blank" rel="noopener noreferrer">chromium.org</a></div></li>
           <li><div class="cr-top"><b>curl</b><span class="cr-lic">curl license</span></div><p>Fetches search results and files from the web.</p><div class="cr-links"><a href="https://github.com/curl/curl" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://curl.se" target="_blank" rel="noopener noreferrer">curl.se</a></div></li>
           <li><div class="cr-top"><b>Python</b><span class="cr-lic">PSF</span></div><p>Runs faster-whisper for the word timing.</p><div class="cr-links"><a href="https://github.com/python/cpython" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://www.python.org" target="_blank" rel="noopener noreferrer">python.org</a></div></li>
           <li><div class="cr-top"><b>Archivo</b><span class="cr-lic">SIL OFL 1.1</span></div><p>The typeface of the Cutsona interface, by Omnibus-Type.</p><div class="cr-links"><a href="https://github.com/Omnibus-Type/Archivo" target="_blank" rel="noopener noreferrer">GitHub</a></div></li>
@@ -255,6 +275,38 @@
         <h4>Where clips and music come from</h4>
         <p class="cr-note">Find clips and Find songs search these sites. Every clip and song belongs to the person who made it.</p>
         <div class="cr-sites"><a href="https://www.youtube.com" target="_blank" rel="noopener noreferrer">YouTube</a><a href="https://www.twitch.tv" target="_blank" rel="noopener noreferrer">Twitch</a><a href="https://kick.com" target="_blank" rel="noopener noreferrer">Kick</a><a href="https://medal.tv" target="_blank" rel="noopener noreferrer">Medal</a><a href="https://www.dailymotion.com" target="_blank" rel="noopener noreferrer">Dailymotion</a><a href="https://getyarn.io" target="_blank" rel="noopener noreferrer">Yarn</a><a href="https://giphy.com" target="_blank" rel="noopener noreferrer">GIPHY</a><a href="https://www.thepartwhere.com" target="_blank" rel="noopener noreferrer">thepartwhere.com</a><a href="https://mixkit.co" target="_blank" rel="noopener noreferrer">Mixkit</a><a href="https://www.pexels.com" target="_blank" rel="noopener noreferrer">Pexels</a><a href="https://pixabay.com" target="_blank" rel="noopener noreferrer">Pixabay</a><a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Openverse</a><a href="https://commons.wikimedia.org" target="_blank" rel="noopener noreferrer">Wikimedia Commons</a><a href="https://destockd.com" target="_blank" rel="noopener noreferrer">Destockd</a><a href="https://archival-footage.com" target="_blank" rel="noopener noreferrer">Archival Footage</a><a href="https://freemusicarchive.org" target="_blank" rel="noopener noreferrer">Free Music Archive</a><a href="https://ccmixter.org" target="_blank" rel="noopener noreferrer">ccMixter</a><a href="https://archive.org" target="_blank" rel="noopener noreferrer">Internet Archive</a><a href="https://freesound.org" target="_blank" rel="noopener noreferrer">Freesound</a><a href="https://en.wikiquote.org" target="_blank" rel="noopener noreferrer">Wikiquote</a></div>
+      </section>
+    </div>
+  </div>
+</div>
+<div class="settings rights-dlg" id="rightsDlg" hidden role="dialog" aria-modal="true" aria-labelledby="rightsTitle">
+  <div class="set-card">
+    <div class="set-h"><b id="rightsTitle">Copyright check</b><button class="small" id="btnRightsClose">Done</button></div>
+    <div class="set-b">
+      <p class="rt-verdict" id="rightsVerdict"></p>
+      <ul class="rt-list" id="rightsList"></ul>
+      <div class="set-row"><button class="small primary-act" id="btnCopyCredits" hidden>Copy credits</button></div>
+      <p class="hint-s">Cutsona judges each clip and song by where it came from and its license, and asks YouTube about its own videos. It can't hear or see the footage itself, so treat this as a guide: it can't promise a post won't be claimed.</p>
+    </div>
+  </div>
+</div>
+<div class="settings proj-dlg" id="projDlg" hidden role="dialog" aria-modal="true" aria-labelledby="projTitle">
+  <div class="set-card">
+    <div class="set-h"><b id="projTitle">Projects</b><button class="small" id="btnProjClose">Done</button></div>
+    <div class="set-b">
+      <section class="set-sec">
+        <h4>This project</h4>
+        <div class="field"><span>Name</span>
+          <div class="set-path"><input type="text" id="projCurName" maxlength="80" spellcheck="false" aria-label="Project name"><button class="small primary-act" id="btnProjSave">Save</button></div>
+          <div class="set-row"><button class="small" id="btnProjSaveNew" hidden>Save as a copy</button><button class="small" id="btnProjNew">New project</button></div>
+          <div class="pj-confirm" id="projNewConfirm" hidden><span>This project isn’t saved yet. Save it before starting a new one?</span>
+            <button class="small primary-act" id="btnProjNewSave">Save it</button><button class="small" id="btnProjNewDiscard">Don’t save</button><button class="small" id="btnProjNewCancel">Cancel</button></div>
+          <small class="hint-s">Once a project has a name and is saved, it saves itself a few seconds after every change. Ctrl+S saves now.</small>
+        </div>
+      </section>
+      <section class="set-sec">
+        <h4>Saved projects</h4>
+        <ul class="pj-list" id="projList"></ul>
       </section>
     </div>
   </div>

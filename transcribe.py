@@ -17,7 +17,7 @@ for line in sys.stdin:
         if model is None:
             from faster_whisper import WhisperModel
             model = WhisperModel(request.get('model') or 'base.en', device='cpu', compute_type='int8',
-                                 cpu_threads=4, download_root=str(Path(__file__).parent / 'bin' / 'whisper'))
+                                 cpu_threads=4, download_root=os.environ.get('CUTSONA_WHISPER_DIR') or str(Path(__file__).parent / 'bin' / 'whisper'))
         segments, info = model.transcribe(request['audio'], beam_size=5, word_timestamps=True,
                                           vad_filter=True, condition_on_previous_text=False)
         words = []

@@ -1,0 +1,90 @@
+{
+  "name": "cutsona",
+  "productName": "Cutsona",
+  "version": "1.1.0",
+  "description": "Turn your clips and a song into beat-synced edits.",
+  "main": "desktop/main.js",
+  "author": "slaxr",
+  "license": "MIT",
+  "homepage": "https://github.com/Cutsona/Cutsona",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cutsona/Cutsona.git"
+  },
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.js",
+    "test": "node --test tests/*.test.mjs",
+    "tools": "node desktop/fetch-tools.js",
+    "dist": "node desktop/fetch-tools.js && electron-builder --win --publish never"
+  },
+  "build": {
+    "appId": "app.cutsona.desktop",
+    "productName": "Cutsona",
+    "copyright": "Copyright © 2026 slaxr",
+    "asar": false,
+    "compression": "maximum",
+    "electronLanguages": ["en-US"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "server.js",
+      "preview.js",
+      "transcription.js",
+      "transcribe.py",
+      "updater.js",
+      "version.json",
+      "app/**/*",
+      "desktop/main.js",
+      "desktop/preload.js",
+      "Cutsona.ico",
+      "LICENSE",
+      "THIRD-PARTY-NOTICES.md",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/bin",
+        "to": "bin"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "Cutsona.ico",
+      "artifactName": "Cutsona-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Cutsona",
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Cutsona",
+        "repo": "Cutsona",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "devDependencies": {
+    "electron": "^45.3.1",
+    "electron-builder": "^26.18.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  }
+}

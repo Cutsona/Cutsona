@@ -63,7 +63,7 @@ export function initSettings({ toast, esc }) {
     const isDefault = server.exportDir === server.defaultExportDir;
     $('#btnResetDir').disabled = isDefault;
     $('#btnPickDir').hidden = !server.canPick;
-    $('#setDirNote').textContent = note || (isDefault ? 'The exports folder inside Cutsona. Pick any folder, like Videos or a synced drive.' : 'Every export is saved straight into this folder.');
+    $('#setDirNote').textContent = note || (isDefault ? 'Cutsona’s own exports folder. Pick any folder, like Videos or a synced drive.' : 'Every export is saved straight into this folder.');
   }
   async function loadServer() {
     try { server = await (await fetch('/api/settings')).json(); } catch { server.exportDir = ''; }
@@ -95,12 +95,69 @@ export function initSettings({ toast, esc }) {
     if (b.dataset.theme) { look.theme = b.dataset.theme; save(); applyLook(); renderLook(); }
     else if (b.dataset.accent) { look.accent = b.dataset.accent; save(); applyLook(); renderLook(); }
     else if (b.id === 'btnAccentReset') { look.accent = DEFAULT_ACCENT; save(); applyLook(); renderLook(); }
-    else if (b.id === 'btnPickDir') setDir('pick=1', (d) => `Exports now save to ${d}`);
+    else if (b.id === 'btnPickDir') {
+      // the desktop app has the system's own folder picker
+      if (window.cutsonaDesktop?.pickFolder) window.cutsonaDesktop.pickFolder(server.exportDir).then((d) => { if (d) setDir('dir=' + encodeURIComponent(d), (x) => `Exports now save to ${x}`); });
+      else setDir('pick=1', (d) => `Exports now save to ${d}`);
+    }
     else if (b.id === 'btnUseDir') setDir('dir=' + encodeURIComponent($('#setDir').value), (d) => `Exports now save to ${d}`);
     else if (b.id === 'btnResetDir') setDir('reset=1', () => 'Exports save to the Cutsona exports folder again');
     else if (b.id === 'btnOpenDir') fetch('/api/open', { method: 'POST' });
     else if (b.id === 'btnSetClose') close();
+    else if (b.id === 'btnCheckSources') checkSources();
+    else if (b.id === 'btnSpeechSetup') setupSpeech();
   });
+
+  // Captions and speech: Whisper needs a small Python environment, set up here with one button
+  let speechTimer = 0;
+  function renderSpeech(j) {
+    const job = j.job || {};
+    $('#speechState').textContent = j.ready ? 'ready' : job.busy ? 'setting up…' : 'not set up';
+    $('#btnSpeechSetup').hidden = !!j.ready || !!job.busy;
+    $('#btnSpeechSetup').textContent = job.error ? 'Try again' : 'Set up speech tools';
+    $('#speechPyLink').hidden = !job.needPython;
+    const note = $('#speechNote');
+    note.classList.toggle('err', !!job.error);
+    note.textContent = j.ready ? 'Captions and sentence-aware cuts work. Speech never leaves this PC.'
+      : job.busy ? `${job.phase}…` : job.error || 'Captions and cutting between sentences need them. Cutsona downloads them once (about 300 MB); speech never leaves this PC.';
+  }
+  async function loadSpeech() {
+    clearTimeout(speechTimer);
+    try {
+      const j = await (await fetch('/api/speech')).json();
+      renderSpeech(j);
+      if (j.job?.busy && !box.hidden) speechTimer = setTimeout(loadSpeech, 1500);
+    } catch {}
+  }
+  async function setupSpeech() {
+    try { renderSpeech(await (await fetch('/api/speech/setup', { method: 'POST' })).json()); } catch {}
+    speechTimer = setTimeout(loadSpeech, 800);
+  }
+
+  // Check sources: is every site Find clips / Find songs uses answering? Each row fills in as its site answers.
+  const STATE_WORD = { ok: 'Working', slow: 'Slow', down: 'Down', empty: 'Not sending results', setup: 'Needs a key', wait: 'Checking…' };
+  async function checkSources() {
+    const btn = $('#btnCheckSources'), list = $('#srcList'), note = $('#srcNote');
+    btn.disabled = true; note.classList.remove('err'); note.textContent = 'Asking each site for a few results…';
+    let sources = [];
+    try { sources = (await (await fetch('/api/sources')).json()).sources; }
+    catch { btn.disabled = false; note.classList.add('err'); note.textContent = 'Cutsona isn’t running: start it again and retry.'; return; }
+    const row = (s) => `<li class="src-row src-${s.state}" data-key="${esc(s.key)}"><i aria-hidden="true"></i><b>${esc(s.name)}</b><span class="src-state">${STATE_WORD[s.state] || ''}${s.ms && s.state !== 'down' ? ` · ${(s.ms / 1000).toFixed(1)}s` : ''}</span>${s.note && s.state !== 'ok' && s.state !== 'wait' ? `<small>${esc(s.note)}</small>` : ''}</li>`;
+    list.innerHTML = sources.map((s) => row({ ...s, state: 'wait' })).join('');
+    const results = await Promise.all(sources.map(async (s) => {
+      let r;
+      try { r = await (await fetch('/api/sources/check?key=' + encodeURIComponent(s.key))).json(); }
+      catch { r = { ...s, state: 'down', note: 'Cutsona couldn’t ask this site.' }; }
+      const li = list.querySelector(`[data-key="${CSS.escape(s.key)}"]`);
+      if (li) li.outerHTML = row(r);
+      return r;
+    }));
+    btn.disabled = false;
+    const tried = results.filter((r) => r.state !== 'setup'), good = tried.filter((r) => r.state === 'ok' || r.state === 'slow');
+    const bad = tried.filter((r) => r.state === 'down' || r.state === 'empty');
+    if (tried.length && !good.length) { note.classList.add('err'); note.textContent = 'None of the sites answered. Check your internet connection, then try again.'; }
+    else note.textContent = bad.length ? `${good.length} of ${tried.length} sites are working. ${bad.map((r) => r.name).join(', ')} ${bad.length === 1 ? 'is' : 'are'} having problems on their side, not yours.` : `All ${tried.length} sites are working.`;
+  }
   $('#accentPick').addEventListener('input', (e) => { look.accent = e.target.value.toLowerCase(); save(); applyLook(); renderLook(); });
   $('#setDir').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnUseDir').click(); });
   box.addEventListener('pointerdown', (e) => { if (e.target === box) close(); });
@@ -113,7 +170,7 @@ export function initSettings({ toast, esc }) {
     box.querySelectorAll('[data-pane]').forEach((p) => { p.hidden = p.dataset.pane !== t; });
   }
   box.querySelector('.set-tabs').addEventListener('click', (e) => { const b = e.target.closest('[data-set-tab]'); if (b) showTab(b.dataset.setTab); });
-  function open() { showTab('settings'); lastFocus = document.activeElement; box.hidden = false; renderLook(); loadServer(); $('#btnSetClose').focus(); }
+  function open() { showTab('settings'); lastFocus = document.activeElement; box.hidden = false; renderLook(); loadServer(); loadSpeech(); $('#btnSetClose').focus(); }
   function close() { box.hidden = true; lastFocus?.focus?.(); }
   return { open, close, isOpen: () => !box.hidden };
 }

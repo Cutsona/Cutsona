@@ -1,5 +1,6 @@
 // Updates in the app: a "Cutsona x.y is out" button in the header, the changelog, and one-click updating.
-// The server side (updater.js) reads the releases of the GitHub repo set in version.json.
+// The desktop app updates itself from GitHub Releases (desktop/main.js, through window.cutsonaDesktop);
+// a copy run from source code uses the server side (updater.js) and the git tags of the repo in version.json.
 const $ = (s, r = document) => r.querySelector(s);
 
 // release notes are Markdown: a small, safe subset (headings, lists, bold, italics, code, https links)
@@ -61,6 +62,14 @@ export function initUpdates({ toast, esc }) {
     const go = $('[data-upd="go"]', modal), st = $('.upd-status', modal), later = $('[data-upd="close"]', modal);
     go.disabled = true; later.disabled = true;
     st.innerHTML = '<span class="spinner"></span> Downloading and installing…';
+    const desk = window.cutsonaDesktop;
+    if (desk?.installUpdate) {
+      // the desktop app downloads the new installer, then closes, updates and opens again by itself
+      desk.onUpdate?.((u) => { if (u.percent != null) st.innerHTML = `<span class="spinner"></span> Downloading ${Math.round(u.percent)}%…`; if (u.ready) st.innerHTML = '<span class="spinner"></span> Installing: Cutsona will open again in a moment…'; });
+      try { await desk.installUpdate(); }
+      catch (e) { updating = false; go.disabled = false; later.disabled = false; st.textContent = e?.message || 'The update didn’t finish.'; }
+      return;
+    }
     try {
       const r = await fetch('/api/update/apply', { method: 'POST' });
       const j = await r.json().catch(() => ({}));
@@ -98,8 +107,11 @@ export function initUpdates({ toast, esc }) {
     }
   }
   async function check(force = false) {
-    try { const j = await (await fetch('/api/update' + (force ? '?force=1' : ''), { cache: 'no-store' })).json(); show(j); return j; }
-    catch { return null; }
+    try {
+      const j = window.cutsonaDesktop?.checkUpdate ? await window.cutsonaDesktop.checkUpdate(force)
+        : await (await fetch('/api/update' + (force ? '?force=1' : ''), { cache: 'no-store' })).json();
+      show(j); return j;
+    } catch { return null; }
   }
   pill.onclick = open;
   if (btnSee) btnSee.onclick = open;

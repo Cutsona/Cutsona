@@ -15,6 +15,9 @@ import { drawWatermark, logoImage, shrinkLogo } from './watermark.js';
 import { initFinder } from './finder.js';
 import { findHighlights, wholeHighlights, planHighlight, findCam, drawStreamOverlay, tightCut, longCut, keepParts, STREAM_LAYOUTS, BANNER_THEMES } from './stream.js';
 import { trimView, partsOff, srcOffset } from './edit.js';
+import { rightsOf, summarize, sourceFromUrl, readId3, LEVELS } from './rights.js';
+import { SAFE_ZONES, fitsSafeZones, coveredShare, safeZoneHtml } from './safezones.js';
+import { createHistory, initProjects } from './projects.js';
 // a clip's cut-and-group parts as a cache key
 const partsKey = (c) => (c.parts || []).map((p) => `${p.a}-${p.b}-${p.on ? 1 : 0}`).join(',');
 
@@ -90,6 +93,7 @@ const state = {
   variants: LINEUP.map((styleId, i) => ({ styleId, seed: (Math.random() * 1e9) | 0, plan: null, custom: (savedCustom[i] && typeof savedCustom[i] === 'object') ? savedCustom[i] : {} })),
   focused: 0,
   solo: !!savedView.solo,
+  safeZone: SAFE_ZONES[savedView.safe] ? savedView.safe : 'off',
   clipVolTouched: false,
   server: { ffmpeg: null },
 };
@@ -106,6 +110,18 @@ for (const v of state.variants) if (v.custom._autoFor !== v.styleId) applyStyleD
 for (const o of [state.settings, ...state.variants.map((v) => v.custom)]) {
   if (o.captionStyle === 'cyan') o.captionStyle = 'cyber_cyan';
   if (o.captionStyle === 'white') o.captionStyle = 'pure_white';
+}
+// a project being opened (its saved cuts are kept while its clips load); removed clips and songs, kept for Undo
+let projectLoading = false;
+const graveyard = new Map();
+function bury(x) {
+  if (!x?.id) return;
+  graveyard.delete(x.id); graveyard.set(x.id, x);
+  while (graveyard.size > 40) {
+    const [k, old] = graveyard.entries().next().value;
+    graveyard.delete(k);
+    if (old.url?.startsWith('blob:') && !state.clips.includes(old)) URL.revokeObjectURL(old.url);
+  }
 }
 function saveSettings() { try { localStorage.setItem('cutsona.settings', JSON.stringify(state.settings)); } catch {} refreshEff(); }
 function saveCustom() { try { localStorage.setItem('cutsona.custom', JSON.stringify(state.variants.map((v) => v.custom))); } catch {} refreshEff(); }
@@ -235,12 +251,79 @@ function renderStatus() {
   chips.push(`<span class="chip ${state.music ? 'ok' : ''}"><i></i>${state.music ? Math.round(state.musicAnalysis.bpm) + ' BPM' : 'No song (120 BPM grid)'}</span>`);
   if (state.server.ffmpeg === false) chips.push(`<span class="chip bad"><i></i>${state.server.offline ? 'Server offline' : 'ffmpeg missing: export disabled'}</span>`);
   if (!('VideoEncoder' in window)) chips.push(`<span class="chip bad"><i></i>Use Chrome/Edge to export</span>`);
+  const rs = rightsSummary();
+  if (rs.items.length) {
+    const w = rs.sum.worst, n = rs.sum.risky;
+    const text = n ? `${n} may get claimed` : w.level === 'credit' || w.level === 'limited' ? 'Credit needed' : w.level === 'free' ? 'All free to use' : 'Copyright check';
+    chips.push(`<button class="chip rights-chip ${n ? 'bad' : w.level === 'free' ? 'ok' : ''}" id="btnRights" title="Copyright check: who owns your clips and song"><i></i>© ${text}</button>`);
+  }
   $('#status').innerHTML = chips.join('');
   // the edit settings stay greyed out (and can't be clicked) until there's a clip or a song to edit
   const locked = !state.clips.length && !state.music;
   $('#editFields').disabled = locked;
   $('#editPanel').classList.toggle('locked', locked);
 }
+// ---------------- copyright check ----------------
+// where a clip or song came from (the finder card, a pasted link, or your own file), for the copyright check
+function originOf(item = {}) {
+  return { kind: item.kind || (item.audio ? 'song' : 'clip'), source: item.source || sourceFromUrl(item.url || ''), url: item.url || '', page: item.page || '',
+    channel: item.channel || '', title: item.title || '', license: item.license || '', moment: !!item.moment };
+}
+// YouTube / Dailymotion links: ask what the site says (a Creative Commons license, a released song inside)
+const rightsAsked = new Set();
+async function lookupRights(origin) {
+  const u = origin?.url || '';
+  if (!/youtube\.com|youtu\.be|dailymotion\.com/.test(u) || origin.meta || rightsAsked.has(u)) return;
+  rightsAsked.add(u);
+  try {
+    const r = await fetch('/api/rights?url=' + encodeURIComponent(u));
+    if (!r.ok) return;
+    origin.meta = await r.json();
+    renderClipsSoon(); renderStatus(); renderMusicName(); if (!$('#rightsDlg').hidden) renderRights();
+  } catch {}
+}
+const rightsFor = (o) => rightsOf({ ...(o || { local: true }) });
+const rightsBadge = (r) => `<span class="rt rt-${r.level}" title="${esc(r.label + ': ' + r.why)}">${esc(r.short)}</span>`;
+function rightsSummary() {
+  const items = state.clips.filter((c) => c.status !== 'error').map((c) => ({ name: c.name, kind: 'Clip', r: rightsFor(c.origin) }));
+  if (state.music) items.push({ name: state.music.name.replace(/\.[^.]+$/, ''), kind: 'Song', r: rightsFor(state.music.origin) });
+  return { items, sum: summarize(items.map((x) => x.r)) };
+}
+function renderMusicName() {
+  if (!state.music) return;
+  $('#musicName').innerHTML = `${esc('♪ ' + state.music.name.replace(/\.[^.]+$/, ''))} ${rightsBadge(rightsFor(state.music.origin))}`;
+}
+function renderRights() {
+  const { items, sum } = rightsSummary();
+  const order = items.slice().sort((a, b) => b.r.rank - a.r.rank);
+  $('#rightsList').innerHTML = order.length ? order.map((x) => `<li class="rt-row">${rightsBadge(x.r)}<div><b>${esc(x.name)}</b> <small>${x.kind}</small><p>${esc(x.r.why)}</p>${x.r.credit ? `<p class="rt-credit">Credit: ${esc(x.r.credit)}</p>` : ''}</div></li>`).join('')
+    : '<li class="rt-row"><p>Add clips or a song and each one gets checked here.</p></li>';
+  const w = sum.worst;
+  $('#rightsVerdict').textContent = !w ? '' : sum.risky ? `${sum.risky} of ${items.length} may get your post muted, claimed or taken down.` : w.level === 'free' ? 'Everything here is free to use.' : 'Nothing here is likely to be claimed. Some of it needs a credit.';
+  $('#btnCopyCredits').hidden = !sum.credits.length;
+}
+function openRights() { renderRights(); $('#rightsDlg').hidden = false; $('#btnRightsClose').focus(); }
+$('#status').addEventListener('click', (e) => { if (e.target.closest('#btnRights')) openRights(); });
+$('#btnRightsClose').onclick = () => { $('#rightsDlg').hidden = true; };
+$('#rightsDlg').addEventListener('click', (e) => { if (e.target.id === 'rightsDlg') $('#rightsDlg').hidden = true; });
+$('#rightsDlg').addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#rightsDlg').hidden = true; });
+$('#btnCopyCredits').onclick = async () => {
+  const { sum } = rightsSummary();
+  try { await navigator.clipboard.writeText(sum.credits.join('\n')); toast('Credits copied: paste them in your post\'s description'); } catch { toast('Couldn\'t copy: select the credits and copy them yourself', true); }
+};
+// exporting something likely to be claimed: say so once (per set of items), never block the export
+const rightsWarned = new Set();
+function warnRights(i) {
+  const v = state.variants[i], used = new Set((v.plan?.segments || []).map((g) => state.planClips[g.clip]).filter(Boolean));
+  const list = [...used].map((c) => ({ name: c.name, r: rightsFor(c.origin) }));
+  if (state.music && !isStream() && Number(eff(i).musicVol) > 0.02) list.push({ name: state.music.name, r: rightsFor(state.music.origin) });
+  const bad = list.filter((x) => x.r.level === 'claimed');
+  const key = bad.map((x) => x.name).sort().join('|');
+  if (!bad.length || rightsWarned.has(key)) return;
+  rightsWarned.add(key);
+  toast(`Heads up: ${bad.length === 1 ? `“${bad[0].name.replace(/\.[^.]+$/, '').slice(0, 40)}” is` : `${bad.length} things in this edit are`} likely to be claimed when you post. Click © at the top for details.`);
+}
+
 setInterval(() => fetch('/api/ping').catch(() => {}), 5000);
 fetch('/api/ping').catch(() => {});
 // closing the window lets Cutsona's engine shut down right away (a reload pings again and keeps it running)
@@ -260,7 +343,7 @@ function addFiles(files, target) {
   pics.forEach(addPhoto);
   vids.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   for (const f of vids) {
-    const clip = { id: 'c' + Math.random().toString(36).slice(2, 9), name: f.name, file: f, status: 'loading', cropX: 0.5, color: CLIP_COLORS[state.clips.length % CLIP_COLORS.length] };
+    const clip = { id: 'c' + Math.random().toString(36).slice(2, 9), name: f.name, file: f, status: 'loading', cropX: 0.5, color: CLIP_COLORS[state.clips.length % CLIP_COLORS.length], origin: { local: true, title: f.name } };
     state.clips.push(clip);
     queueAnalysis(clip);
   }
@@ -269,7 +352,7 @@ function addFiles(files, target) {
 // Photos: the server turns each one into an 8s clip with a slow push-in
 async function addPhoto(f) {
   const clip = { id: 'c' + Math.random().toString(36).slice(2, 9), name: f.name, status: 'loading', sub: 'making clip from photo…', cropX: 0.5,
-    color: CLIP_COLORS[state.clips.length % CLIP_COLORS.length], remote: true, photo: true };
+    color: CLIP_COLORS[state.clips.length % CLIP_COLORS.length], remote: true, photo: true, origin: { local: true, title: f.name } };
   state.clips.push(clip); renderClips(); renderStatus(); updateEmpty();
   try {
     const r = await fetch(`/api/photo?name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f });
@@ -327,9 +410,10 @@ async function grab(item, onUpdate) {
   let host = '';
   try { host = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
   const clip = { id: 'c' + Math.random().toString(36).slice(2, 9), name: item.title || host || 'clip', status: 'loading', sub: 'queued…', cropX: 0.5,
-    color: CLIP_COLORS[state.clips.length % CLIP_COLORS.length], remote: true };
+    color: CLIP_COLORS[state.clips.length % CLIP_COLORS.length], remote: true, origin: originOf(item) };
   state.clips.push(clip); renderClips(); renderStatus(); updateEmpty();
   if (onUpdate) onUpdate({ clipId: clip.id });
+  lookupRights(clip.origin);
   for (;;) {
     await sleep(700);
     let s;
@@ -364,7 +448,9 @@ async function grabSong(item, onUpdate) {
     if (s.status === 'error') { $('#musicDrop').querySelector('b').textContent = 'Drop a song'; throw new Error(s.error || 'song download failed'); }
     if (s.status === 'done') {
       const blob = await (await fetch(s.url)).blob();
-      await setMusic(new File([blob], `${s.name || 'song'}.mp3`, { type: 'audio/mpeg' }));
+      const origin = originOf({ ...item, kind: 'song' });
+      await setMusic(new File([blob], `${s.name || 'song'}.mp3`, { type: 'audio/mpeg' }), origin, s.url);
+      lookupRights(origin);
       return;
     }
   }
@@ -595,6 +681,7 @@ function trackLabel(c) {
   return '';
 }
 
+let speechHintShown = false;
 async function analyzeSpeech(clip) {
   if (!clip.audioBuffer || clip.speechState === 'done') return;
   if (clip.speechPromise) return clip.speechPromise;
@@ -615,9 +702,16 @@ async function analyzeSpeech(clip) {
         replanSoon();
       }
     } catch (error) {
-      clip.speechState = 'failed'; clip.speechError = error.message;
+      clip.speechState = 'failed';
       console.warn('Speech analysis:', error.message);
-      toast(`${clip.name}: speech analysis unavailable; using visual moments. ${error.message}`, true);
+      // the speech tools aren't set up on this PC (yet): say how, once, instead of a Python error per clip
+      if (/No module named|could not start|ENOENT|not recognized|runtime stopped|cannot find/i.test(error.message)) {
+        clip.speechError = 'Captions need the speech tools: set them up once in Settings → Captions and speech.';
+        if (!speechHintShown) { speechHintShown = true; toast('Captions and cutting between sentences need the speech tools. Set them up once in Settings → Captions and speech.'); }
+      } else {
+        clip.speechError = error.message;
+        toast(`${clip.name}: speech analysis unavailable; using visual moments. ${error.message}`, true);
+      }
     } finally { clip.speechPromise = null; renderClipsSoon(); }
   })();
   return clip.speechPromise;
@@ -644,7 +738,7 @@ function removeClip(id) {
   if (!c) return;
   state.clips = state.clips.filter((x) => x !== c);
   player.dropClip(id);
-  if (c.url && c.url.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(c.url), 2000);
+  bury(c); // kept for a while, so Undo can bring it back
   renderClips(); renderStatus(); replanAll(); updateEmpty();
 }
 
@@ -893,7 +987,7 @@ function renderClips() {
     const canCrop = c.status === 'ready' && c.w && state.variants.some((_, i) => Math.abs(Math.log(aspectOf(i) / (c.w / c.h))) > 0.03 && eff(i).framing === 'fill');
     li.innerHTML = `
       <div class="thumb" style="${c.thumb ? `background-image:url(${c.thumb})` : ''}"><span class="dur">${dur}</span></div>
-      <div class="info"><div class="name" title="${esc(c.name)}">${esc(c.name)}</div>
+      <div class="info"><div class="name" title="${esc(c.name)}">${c.status !== 'error' ? rightsBadge(rightsFor(c.origin)) : ''}${esc(c.name)}</div>
         <div class="sub">${c.status === 'loading' ? esc(c.sub || 'analyzing…') : resBadge(c.w, c.h) + esc(c.sub || '')}${c.audioBuffer ? ', audio' : ''}${trackLabel(c)}${crowdLabel(c)}${c.speechState === 'done' ? (c.words?.length ? ', speech timed' : ', no speech') : c.speechState === 'failed' ? ', speech unavailable' : ''}</div>
         <div class="heat ${c.status === 'ready' ? 'trim' : ''}"><canvas width="200" height="4"></canvas></div></div>
       <button class="x" title="Remove">×</button>
@@ -957,24 +1051,22 @@ function setAnalyzing(text) {
 }
 
 // ---------------- music ----------------
-async function setMusic(file) {
+async function setMusic(file, origin = null, url = null) {
   try {
     toast('Detecting beats…');
     $('#musicDrop').querySelector('b').textContent = 'Analyzing ' + file.name + '…';
     const ab = await file.arrayBuffer();
+    const tags = origin ? null : readId3(ab);
     const buffer = await decodeAudio(ab);
     await sleep(20);
     const analysis = analyzeMusic(buffer);
-    state.music = { name: file.name, buffer, analysis };
+    state.music = { name: file.name, buffer, analysis, file, url, origin: origin || { kind: 'song', local: true, title: file.name, tags } };
+    state.music.id = 'm' + Math.random().toString(36).slice(2, 9);
     if (!state.clipVolTouched) { state.settings.clipVol = 0.2; syncInputs(); }
     applyBeatOffset();
     const L = Math.min(currentLength(), buffer.duration);
     state.musicStart = suggestWindow(analysis, L);
-    $('#musicBox').hidden = false;
-    $('#musicDrop').hidden = true;
-    $('#btnRemoveMusic').hidden = false;
-    $('#musicName').textContent = '♪ ' + file.name.replace(/\.[^.]+$/, '');
-    $('#bpm').textContent = `${Math.round(analysis.bpm)} BPM, ${analysis.impacts.length} drops/hits`;
+    musicUi();
     renderStatus(); drawWave(); replanAll();
     toast(`Locked to ${Math.round(analysis.bpm)} BPM`);
   } catch (e) {
@@ -983,7 +1075,17 @@ async function setMusic(file) {
     $('#musicDrop').querySelector('b').textContent = 'Drop a song';
   }
 }
+function musicUi() {
+  const m = state.music;
+  $('#musicBox').hidden = !m; $('#musicDrop').hidden = !!m; $('#btnRemoveMusic').hidden = !m;
+  if (!m) { $('#musicDrop').querySelector('b').textContent = 'Drop a song'; return; }
+  renderMusicName();
+  $('#bpm').textContent = `${Math.round(m.analysis.bpm)} BPM, ${m.analysis.impacts.length} drops/hits`;
+  $('#beatOffset').value = state.beatOffset;
+  $('#offsetVal').textContent = `${state.beatOffset > 0 ? '+' : ''}${state.beatOffset} ms`;
+}
 function removeMusic() {
+  if (state.music) bury(state.music);
   state.music = null;
   state.musicAnalysis = syntheticMusic(130, 120);
   state.musicStart = 0;
@@ -1099,7 +1201,8 @@ function streamHighlights(ready) {
 function streamPlan(i, ready) {
   const v = state.variants[i], s = state.settings, list = streamHighlights(ready);
   if (!list.length) { v.plan = null; return; }
-  const k = i + state.variants.length * (v.hiSkip || 0), h0 = list[k % list.length];
+  // hiPick: one highlight by number (Export all goes through them one by one), else card i of the current page
+  const k = v.hiPick != null ? v.hiPick : i + state.variants.length * (v.hiSkip || 0), h0 = list[k % list.length];
   // fewer highlights than cards: the extra cards are other versions of them (other layout, a short cut)
   const version = Math.floor(k / list.length) % 4, clip = ready[h0.ci];
   const canFlip = !v.custom.layout && s.streamLayout === 'auto' && clip.cam?.steady && !clip.cam.full;
@@ -1132,6 +1235,12 @@ function replan(i, alsoAvoid = null) {
   state.planClips = ready;
   const v = state.variants[i];
   if (!ready.length) { v.plan = null; return; }
+  // a project you opened: keep its saved cuts until you change something that would cut it differently
+  const sp = v.savedPlan;
+  if (sp) {
+    if (!alsoAvoid && sp.ids === ready.map((c) => c.id).join('|') && sp.sig === planSig(i, ready)) { v.plan = restorePlan(sp.plan); attachCutFraming(v); return; }
+    if (!projectLoading) delete v.savedPlan;
+  }
   if (isStream()) { streamPlan(i, ready); return; }
   const L = currentLength();
   if (state.music) state.musicStart = Math.max(0, Math.min(state.musicStart, state.music.buffer.duration - L));
@@ -1414,7 +1523,7 @@ function makeCard() {
       <button class="icon tunebtn" title="Set up just this take: size, filter, effects, fades, card motion"><svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></button>
       <button class="icon reroll" title="New take of this style (R)"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg></button>
       <button class="icon removebtn" title="Remove this take"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-    <div class="screen"><canvas></canvas><span class="sound">audio from this one</span><span class="custom-tag">custom</span>
+    <div class="screen"><canvas></canvas><div class="safe" aria-hidden="true" hidden></div><span class="sound">audio from this one</span><span class="custom-tag">custom</span>
       <button class="solobtn" title="Watch just this one big (V): double-click works too"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button></div>
     <div class="parts"></div>
     <div class="parts-pop" hidden></div>
@@ -1510,6 +1619,7 @@ function initHookDrag(screen, idx) {
     else if (kind === 'wm') renderWmOpts();
     else renderMainLook();
     toast(`${LAYERS[kind].name} moved (every take uses the same spot)`);
+    requestAnimationFrame(renderSafeZones);
   };
   screen.addEventListener('pointerup', end); screen.addEventListener('pointercancel', end);
 }
@@ -1613,7 +1723,7 @@ function focusCard(i) {
 }
 function setSolo(on) {
   state.solo = on;
-  try { localStorage.setItem('cutsona.view', JSON.stringify({ solo: on })); } catch {}
+  try { localStorage.setItem('cutsona.view', JSON.stringify({ solo: on, safe: state.safeZone })); } catch {}
   updateCards(); updateViewBar(); requestAnimationFrame(layoutGrid);
 }
 // Everything that changes how edit i looks, as tick boxes. `from` says which settings own it:
@@ -1691,7 +1801,17 @@ function toggleCardEffect(i, kind, key) {
     toast(`${label} ${on ? 'on' : 'off'} in the main settings${others ? `: also ${on ? 'on' : 'off'} for the ${others} other edit${others > 1 ? 's' : ''} using main` : ''}`);
   }
 }
+function updateExportAll() {
+  const btn = $('#btnExportAll');
+  if (!btn) return;
+  const ready = isStream() ? state.clips.filter((c) => c.status === 'ready') : [];
+  const n = ready.length ? streamHighlights(ready).length : 0;
+  btn.disabled = !n;
+  btn.textContent = n ? `Export all ${n}` : 'Export all';
+}
+$('#btnExportAll').onclick = exportAllHighlights;
 function updateCards() {
+  updateExportAll();
   cards.forEach((el, i) => {
     const v = state.variants[i], st = STYLES[v.styleId];
     el.style.setProperty('--c', st.color);
@@ -1799,6 +1919,25 @@ function layoutGrid(again = false) {
   // every take as tall as the tallest one (a take with fewer effect chips no longer sits out of line)
   const tallest = Math.max(...vis.map((i) => cards[i].offsetHeight));
   for (const i of vis) cards[i].style.minHeight = tallest + 'px';
+  renderSafeZones();
+}
+// ---- safe zones: where TikTok / Reels / Shorts cover the video with their own buttons and captions ----
+function renderSafeZones() {
+  const pf = state.safeZone, P = SAFE_ZONES[pf];
+  cards.forEach((el, i) => {
+    const box = el.querySelector('.safe');
+    if (!box) return;
+    const on = !!P && i < state.variants.length && fitsSafeZones(aspectOf(i));
+    box.hidden = !on;
+    if (!on) { box.innerHTML = ''; return; }
+    // the hook text, banner or watermark sitting under the app's own buttons / captions: say so
+    const warn = [];
+    for (const L of Object.values(LAYERS)) {
+      const b = L.box(i)?.[0];
+      if (b && coveredShare(pf, [b[0], b[1], b[2] - b[0], b[3] - b[1]]) > 0.25) warn.push(L.name);
+    }
+    box.innerHTML = safeZoneHtml(pf) + (warn.length ? `<em class="sz-warn">${esc(warn.join(' and '))} ${warn.length > 1 ? 'are' : 'is'} under ${P.name}'s buttons: drag ${warn.length > 1 ? 'them' : 'it'} into the clear area</em>` : '');
+  });
 }
 new ResizeObserver(() => { layoutGrid(); drawWave(); }).observe(document.querySelector('.stage'));
 // the shot editor opening/closing changes the space the cards get
@@ -2201,10 +2340,29 @@ $('#btnLoop').onclick = (e) => { player.loop = !player.loop; e.currentTarget.cla
 // ---------------- export queue ----------------
 const jobs = [];
 let running = false;
-function queueExport(i) {
+// Stream clips → Export all: every highlight found, one after another (each with its own title and layout)
+function exportAllHighlights() {
+  if (!isStream()) return;
+  if (state.server.ffmpeg === false) return toast('ffmpeg is needed to save MP4s.', true);
+  const ready = state.clips.filter((c) => c.status === 'ready');
+  const list = ready.length ? streamHighlights(ready) : [];
+  if (!list.length) return toast('No highlights found yet: add a stream clip first', true);
+  const v = state.variants[0], keep = { hiPick: v.hiPick, title: v.custom.title };
+  let n = 0;
+  for (let k = 0; k < list.length; k++) {
+    v.hiPick = k; delete v.custom.title;
+    replan(0); refreshEff();
+    if (queueExport(0, { batch: k + 1 })) n++;
+  }
+  if (keep.hiPick == null) delete v.hiPick; else v.hiPick = keep.hiPick;
+  if (keep.title != null) v.custom.title = keep.title;
+  replan(0); refreshEff(); updateCards();
+  toast(`Exporting all ${n} clips: they save one after another. You can keep working.`);
+}
+function queueExport(i, opt = {}) {
   const v = state.variants[i];
-  if (!v.plan?.segments.length) return;
-  if (state.server.ffmpeg === false) return toast('ffmpeg is needed to save MP4s. Run Setup.cmd.', true);
+  if (!v.plan?.segments.length) return false;
+  if (state.server.ffmpeg === false) { toast('ffmpeg is needed to save MP4s.', true); return false; }
   const [res, fps] = state.settings.quality.split('/').map(Number);
   const base = (state.planClips[0]?.name || 'edit').replace(/\.[^.]+$/, '').slice(0, 30);
   const d = new Date();
@@ -2219,6 +2377,8 @@ function queueExport(i) {
   jobs.unshift(job);
   $('#tray').hidden = false;
   renderJobs(); runJobs();
+  warnRights(i);
+  return true;
 }
 async function runJobs() {
   if (running) return;
@@ -2237,7 +2397,7 @@ async function runJobs() {
         job.phase = 'Finishing captions'; renderJobs();
         await Promise.all(job.clips.map(c => c.speechPromise));
         const failed = job.clips.find(c => c.audioBuffer && c.speechState !== 'done');
-        if (failed) throw new Error(`Captions unavailable for ${failed.name}. ${failed.speechError || 'Retry captions or select Off.'}`);
+        if (failed) throw new Error(`No captions for ${failed.name}. ${failed.speechError || 'Try again,'} Or turn Captions off for this take.`);
       }
       const r = await exportEdit({ ...job, poolEl: $('#pool'), isCancelled: () => job.cancel,
         onProgress: (pr) => { job.p = pr.p; job.phase = pr.phase + (pr.eta != null ? `, ~${Math.ceil(pr.eta)}s left` : ''); renderJobs(); } });
@@ -2875,10 +3035,19 @@ $('#tune').addEventListener('input', (e) => {
 function updateViewBar() {
   const vb = $('#viewBar');
   if (!vb) return;
-  vb.innerHTML = `<div class="pick view"><button data-view="all" class="${state.solo ? '' : 'on'}" title="Play every take at the same time">▦ All ${state.variants.length}</button>
+  const tall = state.variants.some((_, i) => fitsSafeZones(aspectOf(i)));
+  const sz = `<select id="szPick" class="sz-pick" aria-label="Safe zones" title="${tall ? 'Safe zones: shade where each app puts its buttons, name and caption over your video (previews only, never exported)' : 'Safe zones are for tall 9:16 videos'}" ${tall ? '' : 'disabled'}>
+    <option value="off">No safe zones</option>${Object.entries(SAFE_ZONES).map(([k, z]) => `<option value="${k}" ${state.safeZone === k ? 'selected' : ''}>${z.name} safe zones</option>`).join('')}</select>`;
+  vb.innerHTML = sz + `<div class="pick view"><button data-view="all" class="${state.solo ? '' : 'on'}" title="Play every take at the same time">▦ All ${state.variants.length}</button>
     <button data-view="one" class="${state.solo ? 'on' : ''}" title="Watch one edit big (V)">▢ One</button></div>` +
     (state.solo ? `<div class="solo-nav">${state.variants.map((v, i) => `<button data-i="${i}" class="${i === state.focused ? 'on' : ''}" style="--c:${STYLES[v.styleId].color}" title="${STYLES[v.styleId].name}">${i + 1}</button>`).join('')}</div>` : '');
 }
+$('#viewBar').addEventListener('change', (e) => {
+  if (e.target.id !== 'szPick') return;
+  state.safeZone = e.target.value;
+  try { localStorage.setItem('cutsona.view', JSON.stringify({ solo: state.solo, safe: state.safeZone })); } catch {}
+  renderSafeZones();
+});
 $('#viewBar').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
   if (b.dataset.view) setSolo(b.dataset.view === 'one');
@@ -2978,3 +3147,200 @@ document.addEventListener('cutsona:look', () => { drawWave(); renderClips(); dra
 
 refreshEff(); renderMainLook(); syncInputs(); applyMode(true); updateCards(); renderStatus(); refreshStatus().then(updateCards);
 window.__cutsona = { state, player };
+
+// ---------------- projects and undo ----------------
+const clone = (o) => (o == null ? o : JSON.parse(JSON.stringify(o)));
+const round3 = (x) => Math.round((Number(x) || 0) * 1000) / 1000;
+// everything you can change, as plain data: what Undo steps through and what a project saves
+function docState() {
+  return {
+    settings: state.settings,
+    takes: state.variants.map((v) => ({ styleId: v.styleId, seed: v.seed, custom: v.custom, hiSkip: v.hiSkip || 0, hiPick: v.hiPick ?? null,
+      cutEdits: v.cutEdits ? [...v.cutEdits] : [], cutFrames: v.cutFrames ? [...v.cutFrames] : [] })),
+    clips: state.clips.filter((c) => c.status !== 'error').map((c) => ({ id: c.id, trim: c.trim || null, parts: c.parts || null, manualCrop: !!c.manualCrop,
+      cropX: round3(c.cropX ?? 0.5), cropY: round3(c.cropY ?? 0.5), cropZoom: round3(c.cropZoom ?? 1) })),
+    music: state.music ? state.music.id : null, musicStart: round3(state.musicStart), beatOffset: state.beatOffset,
+  };
+}
+// what a take's cuts depend on: if none of it changed, a saved take can show its saved cuts
+function planSig(i, ready) {
+  const v = state.variants[i];
+  return JSON.stringify([state.settings, v.styleId, v.seed, v.custom, v.hiSkip || 0, v.hiPick ?? null, v.cutEdits ? [...v.cutEdits] : [], state.variants.length,
+    ready.map((c) => [c.id, c.trim || null, c.parts || null]), state.music ? state.music.name : null, round3(state.musicStart), state.beatOffset]);
+}
+const planJson = (plan) => JSON.parse(JSON.stringify(plan, (k, val) => (k === 'style' ? undefined : val)));
+function restorePlan(p) { const plan = clone(p); plan.style = STYLES[plan.styleId] || STYLES.stream; return plan; }
+// make the takes the right number (adding / removing cards like + Add take and ×)
+function setTakeCount(n) {
+  n = Math.max(1, Math.min(MAX_TAKES, n));
+  if (tuneIndex != null && (n !== state.variants.length)) closeTune();
+  while (state.variants.length < n) {
+    state.variants.push({ styleId: 'beat', seed: 1, plan: null, custom: {} });
+    const el = makeCard(); player.attach(cards.length - 1, el.querySelector('canvas'));
+  }
+  while (state.variants.length > n) {
+    const i = state.variants.length - 1;
+    player.detach(i); cards[i].remove(); cards.splice(i, 1); state.variants.pop();
+  }
+  if (state.focused >= n) state.focused = n - 1;
+  effCache = []; ctxCache = [];
+}
+function setTakes(takes) {
+  setTakeCount(takes.length);
+  takes.forEach((t, i) => {
+    const v = state.variants[i];
+    v.styleId = STYLES[t.styleId] ? t.styleId : 'beat'; v.seed = t.seed; v.custom = clone(t.custom) || {}; v.hiSkip = t.hiSkip || 0;
+    if (t.hiPick == null) delete v.hiPick; else v.hiPick = t.hiPick;
+    v.cutEdits = new Map(t.cutEdits || []); v.cutFrames = new Map(t.cutFrames || []);
+    v.savedPlan = t.savedPlan || null; if (!v.savedPlan) delete v.savedPlan;
+  });
+}
+// after settings / takes / clips changed all at once (Undo, opening a project): redraw every part of the app
+function refreshAll() {
+  saveSettings(); saveCustom(); saveLineup(); refreshEff(); hiCache.key = '';
+  applyMode(true); renderHookOpts(); renderWmOpts();
+  if (tuneIndex != null) renderTune();
+  musicUi(); renderClips(); renderStatus(); drawWave(); updateEmpty(); updateAddTile();
+  replanAll(); requestAnimationFrame(layoutGrid);
+}
+// Undo / Redo: put a snapshot back
+function applyDoc(d) {
+  state.settings = { ...DEFAULTS, ...clone(d.settings) };
+  setTakes(d.takes);
+  const known = new Map([...graveyard.values(), ...state.clips].map((c) => [c.id, c]));
+  const next = [];
+  for (const sc of d.clips) {
+    const c = known.get(sc.id);
+    if (!c) continue;
+    c.trim = sc.trim ? sc.trim.slice() : null; if (sc.parts) c.parts = clone(sc.parts); else delete c.parts;
+    c.manualCrop = sc.manualCrop; c.cropX = sc.cropX; c.cropY = sc.cropY; c.cropZoom = sc.cropZoom;
+    next.push(c); graveyard.delete(c.id);
+  }
+  for (const c of state.clips) if (!next.includes(c) && c.status !== 'error') { player.dropClip(c.id); bury(c); }
+  state.clips = [...next, ...state.clips.filter((c) => c.status === 'error')];
+  if ((state.music?.id || null) !== d.music) {
+    if (state.music) bury(state.music);
+    const m = d.music ? graveyard.get(d.music) : null;
+    if (m) { graveyard.delete(m.id); state.music = m; }
+    else { state.music = null; state.musicAnalysis = syntheticMusic(130, 120); }
+  }
+  state.beatOffset = d.beatOffset || 0; applyBeatOffset();
+  state.musicStart = d.musicStart || 0;
+  for (const c of state.clips) if (c.status === 'ready' && !c.trackState) queueTrack(c);
+  refreshAll();
+}
+const history = createHistory({
+  snapshot: docState,
+  apply: applyDoc,
+  onChange: (why) => { updateUndoUi(); if (why !== 'reset') projects.changed(); },
+});
+function updateUndoUi() {
+  $('#btnUndo').disabled = !history.canUndo();
+  $('#btnRedo').disabled = !history.canRedo();
+}
+function undo() { if (history.undo()) toast('Undone'); else toast('Nothing to undo'); updateUndoUi(); }
+function redo() { if (history.redo()) toast('Redone'); else toast('Nothing to redo'); updateUndoUi(); }
+$('#btnUndo').onclick = undo;
+$('#btnRedo').onclick = redo;
+// any change you make: take a snapshot once things settle (a slider drag is one step)
+for (const ev of ['input', 'change', 'pointerup', 'keyup', 'drop', 'click']) document.addEventListener(ev, () => { history.touch(); setTimeout(updateUndoUi, 500); }, true);
+window.addEventListener('keydown', (e) => {
+  const mod = e.ctrlKey || e.metaKey, typing = e.target.matches?.('input[type=text], input[type=number], textarea');
+  if (!mod) return;
+  const k = e.key.toLowerCase();
+  if (k === 's') { e.preventDefault(); projects.save(); }
+  else if (k === 'o') { e.preventDefault(); projects.show(); }
+  else if (typing || finder.isOpen()) return; // typing: the text box's own undo
+  else if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); }
+}, true);
+
+// a clip or song as a project file reference: still in the cache, already copied for a project, or uploaded now
+async function mediaRef(x) {
+  if (x.mediaRef) return x.mediaRef;
+  if (x.url?.startsWith('/cache/')) return { cache: x.url };
+  if (!x.file) return null;
+  const r = await fetch('/api/projects/media?name=' + encodeURIComponent(x.file.name || x.name || 'clip.mp4'), { method: 'POST', body: x.file });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Couldn’t save ${x.name}`);
+  return (x.mediaRef = { media: j.media });
+}
+// the project's picture in the list: the first clip's thumbnail
+const projectThumb = () => state.clips.find((c) => c.status === 'ready' && c.thumb)?.thumb || '';
+async function buildProjectDoc() {
+  const d = docState();
+  const ready = state.clips.filter((c) => c.status === 'ready');
+  const live = state.clips.filter((c) => c.status !== 'error');
+  const clips = [];
+  for (const c of live) {
+    const sc = d.clips.find((x) => x.id === c.id);
+    clips.push({ ...sc, name: c.name, color: c.color, photo: !!c.photo, origin: c.origin || null, src: await mediaRef(c) });
+  }
+  const m = state.music;
+  const doc = {
+    ...d, clips, mode: state.settings.mode, safeZone: state.safeZone, thumb: projectThumb(),
+    music: m ? { id: m.id, name: m.name, origin: m.origin || null, src: await mediaRef(m) } : null,
+    takes: d.takes.map((t, i) => {
+      const v = state.variants[i];
+      return { ...t, savedPlan: v.plan && ready.length ? { sig: planSig(i, ready), ids: ready.map((c) => c.id).join('|'), plan: planJson(v.plan) } : null };
+    }),
+  };
+  // the server says which copies it kept; one that's gone (a project was deleted meanwhile) is uploaded again next time
+  const afterSave = (saved) => {
+    let lost = false;
+    for (const sc of saved?.clips || []) { const c = state.clips.find((x) => x.id === sc.id); if (!c) continue; if (sc.src) c.mediaRef = sc.src; else if (c.mediaRef) { delete c.mediaRef; lost = true; } }
+    if (m && saved?.music) { if (saved.music.src) m.mediaRef = saved.music.src; else if (m.mediaRef) { delete m.mediaRef; lost = true; } }
+    return lost;
+  };
+  return { doc, afterSave };
+}
+function clearProject() {
+  for (const c of state.clips) { player.dropClip(c.id); if (c.url?.startsWith('blob:')) URL.revokeObjectURL(c.url); }
+  state.clips = []; graveyard.clear();
+  state.music = null; state.musicAnalysis = syntheticMusic(130, 120); state.musicStart = 0; state.beatOffset = 0;
+  rightsWarned.clear();
+}
+function newProjectState() {
+  clearProject();
+  state.settings = { ...DEFAULTS, mode: state.settings.mode };
+  setTakes(DEFAULT_LINEUP.map((styleId) => ({ styleId, seed: (Math.random() * 1e9) | 0, custom: {} })));
+  for (const v of state.variants) applyStyleDefaults(v);
+  player.stop(); player._autostarted = false; updatePlayIcon();
+  refreshAll(); history.reset();
+}
+async function openProjectDoc(pr) {
+  const d = pr.doc;
+  projectLoading = true;
+  try {
+    clearProject();
+    player.stop(); player._autostarted = false; updatePlayIcon();
+    state.settings = { ...DEFAULTS, ...clone(d.settings) };
+    if (SAFE_ZONES[d.safeZone] || d.safeZone === 'off') state.safeZone = d.safeZone;
+    setTakes(d.takes || []);
+    for (const sc of d.clips || []) {
+      if (!sc.url) continue;
+      const clip = { id: sc.id, name: sc.name, url: sc.url, status: 'loading', sub: 'opening…', remote: true, photo: !!sc.photo, color: sc.color || CLIP_COLORS[state.clips.length % CLIP_COLORS.length],
+        origin: sc.origin || { local: true, title: sc.name }, mediaRef: sc.src || undefined, trim: sc.trim || null, manualCrop: !!sc.manualCrop, cropX: sc.cropX ?? 0.5, cropY: sc.cropY ?? 0.5, cropZoom: sc.cropZoom ?? 1 };
+      if (sc.parts) clip.parts = clone(sc.parts);
+      state.clips.push(clip);
+      if (clip.origin) lookupRights(clip.origin);
+    }
+    refreshAll();
+    for (const c of state.clips) queueAnalysis(c);
+    if (d.music?.url) {
+      const blob = await (await fetch(d.music.url)).blob();
+      await setMusic(new File([blob], d.music.name || 'song.mp3', { type: blob.type || 'audio/mpeg' }), d.music.origin || null, d.music.url);
+      if (state.music) { state.music.id = d.music.id || state.music.id; state.music.mediaRef = d.music.src || undefined; if (d.music.origin?.local) state.music.origin = d.music.origin; }
+      state.beatOffset = d.beatOffset || 0; applyBeatOffset(); state.musicStart = d.musicStart || 0;
+      musicUi(); drawWave();
+    }
+    await clipQueue;
+  } finally { projectLoading = false; }
+  replanAll(); refreshEff(); updateCards(); history.reset(); updateUndoUi();
+}
+const projects = initProjects({ buildDoc: buildProjectDoc, openDoc: openProjectDoc, newProject: newProjectState,
+  hasContent: () => state.clips.some((c) => c.status !== 'error') || !!state.music, toast, esc,
+  // a first save without a name: called after the first clip (or the song)
+  suggestName: () => (state.clips.find((c) => c.status !== 'error')?.name || state.music?.name || '').replace(/\.[a-z0-9]{2,4}$/i, '').replace(/[_-]+/g, ' ').trim().slice(0, 60) });
+updateUndoUi();
+setTimeout(() => history.reset(), 0);

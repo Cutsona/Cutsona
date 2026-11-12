@@ -5,18 +5,19 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { createInterface } = require('readline');
 
-module.exports = function createTranscription(root) {
+module.exports = function createTranscription(root, data = root) {
   let config = {};
-  try { config = JSON.parse(fs.readFileSync(path.join(root, 'transcription.config.json'), 'utf8')); } catch {}
+  const readConfig = () => { try { config = JSON.parse(fs.readFileSync(path.join(data, 'transcription.config.json'), 'utf8')) || {}; } catch { config = {}; } };
+  readConfig();
   let worker = null, seq = 0;
   const pending = new Map(), inFlight = new Map();
-  const folder = path.join(root, 'cache', 'transcripts');
+  const folder = path.join(data, 'cache', 'transcripts');
   fs.mkdirSync(folder, { recursive: true });
 
   function start() {
     if (worker) return worker;
     const python = process.env.CUTSONA_PYTHON || config.python || 'python';
-    const proc = spawn(python, ['-u', path.join(root, 'transcribe.py')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const proc = spawn(python, ['-u', path.join(root, 'transcribe.py')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CUTSONA_WHISPER_DIR: path.join(data, 'bin', 'whisper') } });
     worker = proc;
     let stderr = '';
     proc.stderr.on('data', data => { stderr = (stderr + data).slice(-4000); });
@@ -64,5 +65,8 @@ module.exports = function createTranscription(root) {
     inFlight.set(key, task);
     try { return await task; } finally { inFlight.delete(key); }
   }
-  return { transcribe };
+  // Settings → Set up speech tools wrote a new config: use it from the next clip on
+  function reload() { readConfig(); if (worker) { const w = worker; worker = null; w.kill(); } }
+  const configured = () => !!(process.env.CUTSONA_PYTHON || (config.python && fs.existsSync(config.python)));
+  return { transcribe, reload, configured, python: () => process.env.CUTSONA_PYTHON || config.python || '' };
 };

@@ -1,4 +1,5 @@
-# Publishes a new Cutsona version to GitHub, so everyone with access gets the update button.
+# Publishes a new Cutsona version: tags it and pushes, then GitHub builds the installer and publishes the release
+# (.github/workflows/release.yml). Everyone with Cutsona installed gets the Update button.
 # Before running: raise "version" in version.json and write that version's notes at the top of CHANGELOG.md
 # ("## 1.1.0 - Short title", then the changes). Then double-click tools\Release.cmd.
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,8 @@ if (git tag -l $tag) { Fail "$tag is already published. Raise the version in ver
 
 Write-Host ""
 Write-Host "  Publishing Cutsona $version" -ForegroundColor Yellow
+# the desktop app's version (package.json) follows version.json
+if (Get-Command npm -ErrorAction SilentlyContinue) { npm version $version --no-git-tag-version --allow-same-version *> $null }
 git add -A 2>$null
 $staged = git diff --cached --name-only
 if ($staged) { git commit -q -m "Cutsona $version"; Write-Host "  Saved your changes ($(@($staged).Count) files)." }
@@ -32,14 +35,6 @@ if ($LASTEXITCODE -ne 0) { git tag -d $tag | Out-Null; Fail 'Pushing to GitHub f
 git push -q origin $tag
 if ($LASTEXITCODE -ne 0) { git tag -d $tag | Out-Null; Fail 'Pushing the version tag to GitHub failed. Try again.' }
 
-# a GitHub Release too, when the GitHub CLI is installed (nice on the repo page; Cutsona itself only needs the tag)
-if (Get-Command gh -ErrorAction SilentlyContinue) {
-  $esc = [regex]::Escape($version)
-  $notes = ([regex]::Match($log, "(?ms)^##\s+v?$esc\b[^\n]*\n(.*?)(?=^##\s|\z)")).Groups[1].Value.Trim()
-  $title = ([regex]::Match($log, "(?m)^##\s+v?$esc\b\s*[-:]?\s*(.*)$")).Groups[1].Value.Trim()
-  $nf = New-TemporaryFile; Set-Content -Path $nf -Value $notes -Encoding utf8
-  gh release create $tag --title ("$tag" + $(if ($title) { " - $title" } else { '' })) --notes-file $nf | Out-Null
-  Remove-Item $nf
-}
-Write-Host "  Done: Cutsona $version is out. Everyone gets the update the next time they open Cutsona." -ForegroundColor Green
+Write-Host "  Done: GitHub is building the Cutsona $version installer now (about 10 minutes)." -ForegroundColor Green
+Write-Host "  Follow it at https://github.com/Cutsona/Cutsona/actions . When it's finished, everyone gets the update." -ForegroundColor Green
 Write-Host ""

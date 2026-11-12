@@ -3,16 +3,42 @@
 Everything Cutsona does, in more detail. For installing, see the [README](../README.md).
 
 ## Opening Cutsona
-Use the Cutsona shortcut on your Desktop or Start menu (or double-click **Cutsona.vbs** in its folder).
-Cutsona opens in its own window with no console: its engine runs in the background and closes itself
-a few seconds after you close the Cutsona window. Opening Cutsona again while it's running just brings up
-its window. What the engine prints goes to `cutsona.log`. Exports go to the `exports` folder, or any
-folder you pick in **Settings**. **Settings → Credits** lists the open-source tools Cutsona is built on.
+Use the Cutsona shortcut on your Desktop or Start menu. Cutsona is one window: its engine (searching, downloading,
+saving videos) runs inside the app and stops when you close it. Opening Cutsona again while it's open brings up
+the window you have.
+
+Where things are kept:
+- **Finished videos**: `Videos\Cutsona`, or any folder you pick in **Settings**.
+- **Projects, downloads and settings**: `%APPDATA%\Cutsona`. What the engine prints goes to `cutsona.log` there,
+  handy when something goes wrong. Uninstalling Cutsona leaves this folder, so reinstalling keeps your projects.
+- **Run from the source code** (`npm start`), everything stays inside the code folder instead.
+
+**Settings → Credits** lists the open-source tools Cutsona is built on.
+
+## Projects and undo
+- **Save** with Ctrl+S, or open **Projects** from the project name at the top. The first save names the project
+  after your first clip; type a new name any time. After that it saves itself a few seconds after each change.
+- A project keeps your clips (even ones from your own PC), the song, every setting, each take's style and
+  keyframes, deleted and replaced cuts, and the exact cuts on screen. Opening it shows the takes as you left them.
+- **New project** starts over (it asks first if the current one isn't saved). **Save as a copy** branches off.
+- **Undo / Redo** (Ctrl+Z / Ctrl+Y, or the arrows at the top) go back through everything you changed: settings,
+  takes, trims, framing, the song window, even a clip or take you removed.
 
 ## Features
 * **Settings** (gear, top right): the folder finished videos save to (Choose folder…, or type a
   path), Dark / Light / Match Windows theme, and the accent color (any color, not just yellow).
   The folder choice is kept in `cutsona-settings.json`; the look is kept in the browser.
+* **Copyright check**: each clip and song gets a badge (Free, Credit, Your file, Limited, Owned, Claim risk), and
+  the **©** note at the top opens the details: who owns what, why, and the credits to paste into your post.
+  It goes by where each one came from and its license, and asks YouTube about its own videos (a Creative
+  Commons license, or a released song inside). It can't hear or see the footage, so it's a guide, not a promise.
+  Exporting something likely to be claimed shows a heads-up once; it never stops the export.
+* **Safe zones** (next to the view buttons): shade where TikTok, Reels or Shorts put their buttons, name and
+  caption over a 9:16 video. If the hook text, banner or watermark sits under them, the take says so. The
+  shading is only on the previews, never in your video.
+* **Stream clips → Export all** saves every highlight Cutsona found, one after another, each with its own title.
+* **Settings → Check sources** asks every site Find clips and Find songs use for a few results, and shows which
+  ones are working, slow or down. When one is down, that's on the site's side, not your PC.
 * The edit controls stay greyed out until you add a clip or a song.
 * **Hover a clip** in the clip list to see a small preview of it. Search results in Find clips
   preview on hover too.
@@ -101,8 +127,9 @@ remains a separate optional title.
 Speech analysis runs locally even with captions off, because sentence timing improves clip
 selection. Timings are cached by the audio content.
 
-The installer sets up the speech tools (Python with `faster-whisper==1.2.1` in `bin\speech`) and
-points `transcription.config.json` at them. To use your own, set `CUTSONA_PYTHON` to a Python that has
+**Settings → Captions and speech → Set up speech tools** installs them once: a Python environment with
+`faster-whisper==1.2.1` in `bin\speech`, with `transcription.config.json` pointing at it. It needs Python 3.10 to
+3.12 on the PC ([python.org](https://www.python.org/downloads/)). To use your own, set `CUTSONA_PYTHON` to a Python that has
 `faster-whisper`, or set `python` in `transcription.config.json`. `CUTSONA_WHISPER_MODEL` or the
 config's `model` picks the model: a folder or a Faster Whisper model name. The default is `base.en`
 (English, downloaded on first use); `base` handles other languages. If speech analysis isn't available,

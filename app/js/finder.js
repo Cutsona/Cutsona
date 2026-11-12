@@ -697,7 +697,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       // a song or sound: becomes the edit's music (MP3), not a clip
       toast(`Getting “${item.title || 'song'}” as MP3…`);
       try {
-        await grabSong({ url: item.url, title: item.title || null, duration: item.duration, ...extra }, (upd) => { Object.assign(job, upd, { audio: true }); rerender(); });
+        await grabSong({ url: item.url, title: item.title || null, duration: item.duration, source: item.source, channel: item.channel, license: item.license, page: item.page, ...extra }, (upd) => { Object.assign(job, upd, { audio: true }); rerender(); });
         job.status = 'done'; rerender();
       } catch (e) { job.status = 'error'; job.phase = e.message; job.error = e.message; rerender(); toast(e.message, true); }
       return;
@@ -706,7 +706,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       // 4K videos (or anything picked while "4K only" is on) download in 4K
       const maxRes = item.res === '4K' || (st.quality === '4k' && showsQuality()) ? 2160 : undefined;
       await grab({ url: item.url, photo: !!item.photo, title: item.title ? (item.moment && item.channel ? `${item.channel}: ${item.title.length > 60 ? item.title.slice(0, 60).replace(/\s+\S*$/, '') + '…' : item.title}` : `${item.title}${item.source === 'yarn' && item.channel ? ': ' + item.channel : ''}`) : null, duration: item.duration, maxRes,
-        source: item.source, channel: item.channel, page: item.page, views: item.views, ...extra }, (upd) => {
+        source: item.source, channel: item.channel, page: item.page, views: item.views, license: item.license, moment: !!item.moment, ...extra }, (upd) => {
         Object.assign(job, upd);
         if (upd.status === 'done' && !job._counted) { job._counted = true; st.added++; updateFoot(); }
         rerender();

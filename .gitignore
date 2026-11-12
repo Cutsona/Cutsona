@@ -31,3 +31,10 @@ slax.log
 
 # copies of the files an update replaced (kept on this PC only)
 .update-backup/
+
+# your saved projects (and the clips they use)
+projects/
+
+# the desktop app: built installers, and the FFmpeg / yt-dlp copies it ships with (npm run tools)
+dist/
+vendor/

@@ -19,20 +19,20 @@ jobs:
       - run: npm test
       - name: Get FFmpeg and yt-dlp
         run: node desktop/fetch-tools.js
-      - name: Build the installer and publish the release
-        run: npx electron-builder --win --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Release title and notes from CHANGELOG.md
+      - name: Build the installer
+        run: npx electron-builder --win --publish never
+      # one release, created once, with the installer, its update files and the notes from CHANGELOG.md
+      - name: Publish the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $v = '${{ github.ref_name }}'.TrimStart('v')
-          $log = Get-Content CHANGELOG.md -Raw
+          $log = [IO.File]::ReadAllText("$PWD/CHANGELOG.md", [Text.Encoding]::UTF8)
           $esc = [regex]::Escape($v)
           $notes = ([regex]::Match($log, "(?ms)^##\s+v?$esc\b[^\n]*\n(.*?)(?=^##\s[^#]|\z)")).Groups[1].Value.Trim()
           $title = ([regex]::Match($log, "(?m)^##\s+v?$esc\b\s*[-:]?\s*(.*)$")).Groups[1].Value.Trim()
           $notes += "`n`n**Install:** download ``Cutsona-Setup-$v.exe`` below and open it."
-          Set-Content -Path notes.md -Value $notes -Encoding utf8
-          gh release edit "v$v" --title ("Cutsona $v" + $(if ($title) { " - $title" } else { '' })) --notes-file notes.md
+          [IO.File]::WriteAllText("$PWD/notes.md", $notes, (New-Object Text.UTF8Encoding $false))
+          $name = "Cutsona $v" + $(if ($title) { " - $title" } else { '' })
+          gh release create "v$v" "dist/Cutsona-Setup-$v.exe" "dist/Cutsona-Setup-$v.exe.blockmap" "dist/latest.yml" --title $name --notes-file notes.md --latest

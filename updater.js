@@ -4,10 +4,9 @@
 // then publish a GitHub Release whose tag is that version (e.g. v1.1.0) with the notes as its description.
 // Everyone running an older Cutsona gets "Cutsona 1.1.0 is out" with those notes and an Update button.
 //
-// A private repo (invite-only) is shared with git: people download Cutsona with GitHub Desktop or `git clone`,
-// signed in to their own GitHub account. Those copies look for new versions with git (new version tags, like
-// v1.1.0) and read the notes from CHANGELOG.md at that tag, so a private repo needs no GitHub Releases at all:
-// tools/Release.cmd publishes a version. Copies downloaded as a zip (public repos only) use GitHub Releases.
+// Copies installed with install.ps1 (or `git clone`) look for new versions with git (new version tags, like
+// v1.1.0) and read the notes from CHANGELOG.md at that tag, so they need no GitHub Releases at all:
+// tools/Release.cmd publishes a version. Copies downloaded as a zip use GitHub Releases.
 //
 // Installing: a git copy moves to the new version's tag (fast-forward only); a downloaded copy gets the release's source zip,
 // unpacked over the Cutsona folder. Your own files are never touched (keys, settings, downloads, exports, tools),
@@ -55,7 +54,7 @@ module.exports = function updater({ root, curl, ua }) {
       return { current, repo, available: false, method: 'git', error: e.code === 'ENOENT' || /ENOENT|not recognized/i.test(m)
         ? 'Couldn’t check for updates: install Git for Windows (git-scm.com), then open Cutsona again.'
         : /auth|credential|could not read|403|denied|not found|repository/i.test(m)
-        ? 'Couldn’t check for updates: sign in to GitHub on this PC with the account that was invited (run git fetch in the Cutsona folder once).'
+        ? 'Couldn’t check for updates: GitHub didn’t let this copy in. Run the Cutsona installer again.'
         : 'Couldn’t reach GitHub to check for updates.' };
     }
     const tags = (await git(['tag', '-l', 'v*'])).split(/\r?\n/).map((t) => t.trim()).filter((t) => /^v\d+(\.\d+){0,2}$/.test(t))

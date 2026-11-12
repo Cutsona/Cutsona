@@ -1,0 +1,24 @@
+Cutsona
+Copyright (c) 2026 slaxr. All rights reserved.
+
+Cutsona is shared privately, by invitation only.
+
+If you were invited to the Cutsona repository, you may download, install and use Cutsona for your own
+personal use, and receive its updates.
+
+You may not, without written permission from slaxr:
+  - share, upload, sell, rent or otherwise give Cutsona or any part of its code to anyone else;
+  - publish Cutsona or a modified version of it, or include its code in another project;
+  - remove or change this notice.
+
+Access can be removed at any time. When it is, these permissions end too.
+
+Cutsona is provided "as is", without warranty of any kind. slaxr is not responsible for any damage or
+loss from using it. You are responsible for the videos and music you download and post with Cutsona:
+they belong to their owners, and the sites they come from have their own terms.
+
+Third-party software that Cutsona uses keeps its own license (see Settings -> Credits in Cutsona):
+  - mp4-muxer (MIT), included in app/js/vendor with its license file
+  - the Archivo typeface (SIL Open Font License 1.1), included in app/fonts with its license file
+  - FFmpeg, yt-dlp, MediaPipe, Node.js, Python and faster-whisper are not part of this repository:
+    they are installed or downloaded separately under their own licenses.

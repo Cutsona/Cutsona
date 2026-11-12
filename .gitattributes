@@ -1,0 +1,11 @@
+# keep line endings consistent; Windows scripts need CRLF
+* text=auto
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.vbs text eol=crlf
+*.ps1 text eol=crlf
+*.woff2 binary
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.mp3 binary

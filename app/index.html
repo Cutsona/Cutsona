@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cutsona</title>
+<link rel="icon" href="brand/icon.svg" type="image/svg+xml">
+<link rel="icon" href="brand/icon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="brand/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="brand/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img class="logo" src="brand/icon.svg" alt="" width="26" height="26">
+    <span class="brand-name">Cutsona</span>
+  </div>
+  <div class="status" id="status"></div>
+  <div class="top-actions">
+    <button class="upd-pill" id="btnUpdate" hidden title="A new version of Cutsona is out: see what's new">Update</button>
+      <button class="ghost" id="btnFolder" title="Open the folder your videos are saved in">Exports folder</button>
+    <button class="ghost icon-only" id="btnSettings" title="Settings: export folder, theme, accent color" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+    <button class="primary" id="btnGenerate" disabled>New takes <kbd>G</kbd></button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="side">
+    <div class="mode-switch" id="modeSwitch" role="tablist" aria-label="What are you making?">
+      <button data-mode="edits"><b>Edits</b><small>Cut to a song</small></button>
+      <button data-mode="stream"><b>Stream clips</b><small>Twitch and Kick highlights</small></button>
+    </div>
+    <section class="panel">
+      <div class="panel-h">
+        <h3><span class="step">1</span> Clips</h3>
+        <div class="panel-actions">
+          <button class="small" id="btnAddFolder">Folder</button>
+          <button class="small" id="btnAddClips">Add clips</button>
+        </div>
+      </div>
+      <div class="drop" id="clipDrop">
+        <b>Drop clips or photos here</b>
+        <small>MP4, MOV, WEBM or MKV. You can also paste a link with Ctrl+V.</small>
+      </div>
+      <button class="find-btn" id="btnFind">Find clips <small>Videos, streamers, gaming</small><kbd>F</kbd></button>
+      <ul class="clips" id="clipList"></ul>
+    </section>
+
+    <section class="panel edit-only" id="musicPanel">
+      <div class="panel-h">
+        <h3><span class="step">2</span> Music</h3>
+        <div class="panel-actions">
+          <button class="small" id="btnRemoveMusic" hidden>Remove</button>
+          <button class="small" id="btnAddMusic">Choose song</button>
+        </div>
+      </div>
+      <div class="drop small" id="musicDrop"><b>Drop a song</b><small>MP3, WAV or M4A. Every cut lands on its beat.</small></div>
+      <button class="find-btn song" id="btnFindSong">Find songs <small>YouTube, free music, sounds</small></button>
+      <div class="music" id="musicBox" hidden>
+        <div class="music-name" id="musicName"></div>
+        <div class="wave-wrap"><canvas id="wave"></canvas></div>
+        <div class="music-meta">
+          <span class="pill" id="bpm">BPM</span>
+          <span class="hint">Drag the window to pick the part of the song</span>
+          <button class="small" id="btnBestPart">Best part</button>
+        </div>
+        <label class="field">
+          <span>Beat sync nudge <em id="offsetVal">0 ms</em></span>
+          <input type="range" id="beatOffset" min="-150" max="150" step="5" value="0">
+        </label>
+      </div>
+    </section>
+
+    <section class="panel" id="editPanel">
+      <div class="panel-h"><h3><span class="step">3</span> <span id="editTitle">Edit</span></h3></div>
+      <div class="lock-note" id="lockNote">Add a clip or a song first: then everything here unlocks.</div>
+      <fieldset class="lockable" id="editFields">
+      <div class="field">
+        <span id="lenLabel">Length</span>
+        <div class="seg" id="segLength" data-key="length">
+          <button data-v="7">7s</button><button data-v="10">10s</button><button data-v="15">15s</button><button data-v="20">20s</button><button data-v="30">30s</button><button data-v="45">45s</button><button data-v="60">60s</button>
+          <button data-v="match" class="seg-wide" title="As long as your clips, without the dead video">Match clip</button>
+        </div>
+      </div>
+      <div class="field">
+        <span>Format</span>
+        <div class="seg wrap4" id="segFormat" data-key="format">
+          <button data-v="9:16" title="TikTok, Reels, Shorts">9:16</button><button data-v="4:5" title="Instagram feed">4:5</button><button data-v="1:1" title="Square">1:1</button><button data-v="16:9" title="YouTube">16:9</button>
+          <button data-v="3:4" title="Tall photo">3:4</button><button data-v="4:3" title="Classic TV">4:3</button><button data-v="2:3" title="Pinterest">2:3</button><button data-v="21:9" title="Cinema widescreen">21:9</button>
+        </div>
+        <div class="fmt-custom" id="fmtCustom">
+          <span>Custom</span><input type="number" id="fmtW" min="1" max="64" step="1" aria-label="Custom width ratio"><b>:</b><input type="number" id="fmtH" min="1" max="64" step="1" aria-label="Custom height ratio">
+          <button class="small" id="btnFmtCustom">Use</button>
+        </div>
+      </div>
+      <div class="field edit-only">
+        <span>Framing</span>
+        <div class="seg" id="segFraming" data-key="framing">
+          <button data-v="fill">Fill (crop)</button><button data-v="fit">Fit + blur</button>
+        </div>
+      </div>
+      <div id="mainLook"></div>
+      <div class="hint-row edit-only">Each take can be set up on its own. Use the sliders button on its slate, or press <kbd>C</kbd>, to change its size, filter, effects and fades.</div>
+      <label class="field edit-only">
+        <span>Pacing <em id="pacingVal"></em></span>
+        <input type="range" id="pacing" min="0" max="1" step="0.05">
+        <div class="ends"><i>Fast cuts</i><i>Longer moments</i></div>
+      </label>
+      <label class="field edit-only">
+        <span>Effect intensity <em id="intensityVal"></em></span>
+        <input type="range" id="intensity" min="0" max="2" step="0.05">
+      </label>
+      <div class="two edit-only">
+        <label class="field"><span>Music volume <em id="musicVolVal"></em></span><input type="range" id="musicVol" min="0" max="1" step="0.05"></label>
+        <label class="field"><span>Clip audio <em id="clipVolVal"></em></span><input type="range" id="clipVol" min="0" max="1" step="0.05"></label>
+      </div>
+      <label class="field">
+        <span>Hook text <em>optional</em></span>
+        <input type="text" id="hookText" maxlength="90" placeholder="e.g. HE DID NOT SEE THAT COMING">
+      </label>
+      <div id="hookOpts" class="hook-opts"></div>
+      <div class="field"><span>Watermark <em id="wmState">off</em></span>
+        <div class="pick" id="wmPick"><button data-wm="off">Off</button><button data-wm="text">Text</button><button data-wm="logo">Logo</button></div>
+      </div>
+      <div id="wmOpts" class="hook-opts"></div>
+      <input type="file" id="fileLogo" accept="image/png,image/jpeg,image/webp" hidden>
+      <div class="field">
+        <span>Export quality</span>
+        <div class="seg wrap4" id="segQuality" data-key="quality">
+          <button data-v="360/30" title="Smallest file">360p</button><button data-v="480/30">480p</button><button data-v="720/30">720p</button><button data-v="720/60" title="720p at 60 frames a second">720p 60</button>
+          <button data-v="1080/30">1080p</button><button data-v="1080/60" title="1080p at 60 frames a second">1080p 60</button><button data-v="1440/30" title="2K">1440p</button><button data-v="2160/30" title="4K: big files, slower export">4K</button>
+        </div>
+      </div>
+      </fieldset>
+    </section>
+  </aside>
+
+  <section class="stage">
+    <div class="empty" id="empty">
+      <div class="empty-inner">
+        <div class="blank-takes" aria-hidden="true">
+          <div class="blank"><div class="clapper"></div><div class="blank-slate"><small>Take</small><b>1</b></div><div class="blank-screen"></div></div>
+          <div class="blank"><div class="clapper"></div><div class="blank-slate"><small>Take</small><b>2</b></div><div class="blank-screen"></div></div>
+          <div class="blank"><div class="clapper"></div><div class="blank-slate"><small>Take</small><b>3</b></div><div class="blank-screen"></div></div>
+          <div class="blank"><div class="clapper"></div><div class="blank-slate"><small>Take</small><b>4</b></div><div class="blank-screen"></div></div>
+        </div>
+        <div class="empty-copy">
+          <h1 class="empty-title">Four takes from your clips</h1>
+          <p>Add clips and Cutsona cuts different versions that play side by side (four to start, up to ten), so you can compare before you export. Add a song and every cut lands on its beat.</p>
+          <div class="empty-cta">
+            <button class="primary big" id="btnFindEmpty">Find clips</button>
+            <button class="ghost big" id="btnOwnEmpty">Use my own clips</button>
+          </div>
+          <div class="empty-hint">You can also drop video files anywhere in this window, or paste a link.</div>
+          <div class="analyzing" id="analyzing" hidden><div class="spinner"></div><span id="analyzingText">Reading clips</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="grid" id="grid" hidden></div>
+    <div class="shotbar" id="shotBar" hidden></div>
+    <div class="transport" id="transport" hidden>
+      <button class="play" id="btnPlay" title="Play or pause (Space)"><svg viewBox="0 0 24 24"><path id="playIcon" d="M7 5v14l12-7z"/></svg></button>
+      <div class="time" id="time">0:00.0</div>
+      <div class="timeline-wrap">
+        <div class="tl-lanes" aria-hidden="true"><i></i><span title="Card motion keyframes (the whole picture moves): double-click this row to add one">Card</span><span title="Camera keyframes (what the camera looks at inside a cut): double-click this row to add one">Camera</span><span title="The song: lines are beats, pink lines are drops">Song</span><span title="Your edit's cuts, numbered: click one to frame it">Cuts</span></div>
+        <canvas id="timeline"></canvas>
+        <div class="tl-label" id="tlLabel"></div>
+      </div>
+      <div class="tl-zoom" role="group" aria-label="Timeline zoom">
+        <button id="tlZoomOut" title="Zoom the timeline out (−)" aria-label="Zoom out" disabled><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
+        <button id="tlZoomLvl" title="Fit the whole edit (click). Ctrl + scroll on the timeline zooms too">Fit</button>
+        <button id="tlZoomIn" title="Zoom the timeline in (+)" aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12"/></svg></button>
+      </div>
+      <div class="tl-add">
+        <button class="small" id="btnAddCut" title="Add a new cut after the one at the playhead, from your clips">+ Add clip</button>
+        <div class="add-menu" id="addMenu" hidden role="menu"></div>
+      </div>
+      <div class="viewbar" id="viewBar"></div>
+      <button class="small toggle on" id="btnLoop" title="Loop">Loop</button>
+    </div>
+    <aside class="tune" id="tune" hidden></aside>
+  </section>
+</main>
+
+<div class="tray" id="tray" hidden>
+  <div class="tray-h"><b>Exports</b><button class="small" id="btnTrayClose">Hide</button></div>
+  <div id="jobs"></div>
+</div>
+<div class="settings" id="settings" hidden role="dialog" aria-modal="true" aria-label="Settings">
+  <div class="set-card">
+    <div class="set-h">
+      <div class="set-tabs" role="tablist"><button role="tab" data-set-tab="settings" class="on" aria-selected="true">Settings</button><button role="tab" data-set-tab="credits" aria-selected="false">Credits</button></div>
+      <button class="small" id="btnSetClose">Done</button>
+    </div>
+    <div class="set-b" data-pane="settings">
+      <section class="set-sec">
+        <h4>Saving</h4>
+        <div class="field set-dir"><span>Save finished videos to</span>
+          <div class="set-path"><input type="text" id="setDir" spellcheck="false" aria-label="Folder for finished videos"><button class="small primary-act" id="btnPickDir">Choose folder…</button></div>
+          <div class="set-row"><button class="small" id="btnUseDir">Use this path</button><button class="small" id="btnOpenDir">Open folder</button><button class="small" id="btnResetDir">Back to default</button></div>
+          <small class="hint-s" id="setDirNote"></small>
+        </div>
+      </section>
+      <section class="set-sec">
+        <h4>Updates</h4>
+        <div class="field"><span>Version <em id="updVersion"></em></span>
+          <div class="set-row"><button class="small" id="btnCheckUpd">Check for updates</button><button class="small primary-act" id="btnSeeUpd" hidden>See what’s new</button></div>
+          <small class="hint-s" id="updNote"></small>
+        </div>
+      </section>
+      <section class="set-sec">
+        <h4>Look</h4>
+        <div class="field"><span>Theme</span>
+          <div class="pick" id="setTheme"><button data-theme="dark">Dark</button><button data-theme="light">Light</button><button data-theme="system">Match Windows</button></div>
+        </div>
+        <div class="field"><span>Accent color <em id="accentName"></em></span>
+          <div class="swatches" id="setAccent"></div>
+          <div class="set-row"><button class="small" id="btnAccentReset">Back to yellow</button></div>
+          <small class="hint-s">Used for buttons you press, the take you're on, the song window and the playhead.</small>
+        </div>
+        <div class="set-sample" aria-hidden="true"><span class="primary">Export</span><span class="s-chip">Selected</span><span class="s-bar"><i></i></span></div>
+      </section>
+    </div>
+    <div class="set-b" data-pane="credits" hidden>
+      <p class="cr-intro">Cutsona is built on free, open-source software. Thank you to everyone who makes and looks after these projects.</p>
+      <section class="set-sec">
+        <h4>Video and audio</h4>
+        <ul class="cr-list">
+          <li><div class="cr-top"><b>FFmpeg</b><span class="cr-lic">LGPL / GPL</span></div><p>Reads, converts and saves every video and song: exports, previews, downloads and the waveform.</p><div class="cr-links"><a href="https://github.com/FFmpeg/FFmpeg" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://ffmpeg.org" target="_blank" rel="noopener noreferrer">ffmpeg.org</a><a href="https://www.gyan.dev/ffmpeg/builds/" target="_blank" rel="noopener noreferrer">Windows builds by gyan.dev</a></div></li>
+          <li><div class="cr-top"><b>yt-dlp</b><span class="cr-lic">Unlicense</span></div><p>Downloads clips and songs from YouTube, Twitch, Kick, TikTok and hundreds of other sites.</p><div class="cr-links"><a href="https://github.com/yt-dlp/yt-dlp" target="_blank" rel="noopener noreferrer">GitHub</a></div></li>
+          <li><div class="cr-top"><b>mp4-muxer</b><span class="cr-lic">MIT</span></div><p>Packs the frames Cutsona renders into the MP4 files you export.</p><div class="cr-links"><a href="https://github.com/Vanilagy/mp4-muxer" target="_blank" rel="noopener noreferrer">GitHub</a></div></li>
+        </ul>
+      </section>
+      <section class="set-sec">
+        <h4>Finding people and words</h4>
+        <ul class="cr-list">
+          <li><div class="cr-top"><b>MediaPipe</b><span class="cr-lic">Apache 2.0</span></div><p>Finds faces and people in your clips so auto-framing can follow them (BlazeFace and EfficientDet-Lite models).</p><div class="cr-links"><a href="https://github.com/google-ai-edge/mediapipe" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://ai.google.dev/edge/mediapipe" target="_blank" rel="noopener noreferrer">Website</a></div></li>
+          <li><div class="cr-top"><b>faster-whisper</b><span class="cr-lic">MIT</span></div><p>Hears the words in your clips, for captions and for cutting between sentences.</p><div class="cr-links"><a href="https://github.com/SYSTRAN/faster-whisper" target="_blank" rel="noopener noreferrer">GitHub</a></div></li>
+          <li><div class="cr-top"><b>Whisper</b><span class="cr-lic">MIT</span></div><p>The speech recognition model faster-whisper runs, by OpenAI.</p><div class="cr-links"><a href="https://github.com/openai/whisper" target="_blank" rel="noopener noreferrer">GitHub</a></div></li>
+          <li><div class="cr-top"><b>CTranslate2</b><span class="cr-lic">MIT</span></div><p>Runs Whisper fast on your computer’s processor.</p><div class="cr-links"><a href="https://github.com/OpenNMT/CTranslate2" target="_blank" rel="noopener noreferrer">GitHub</a></div></li>
+        </ul>
+      </section>
+      <section class="set-sec">
+        <h4>What Cutsona runs on</h4>
+        <ul class="cr-list">
+          <li><div class="cr-top"><b>Node.js</b><span class="cr-lic">MIT</span></div><p>Runs Cutsona’s engine: searching, downloading, and talking to FFmpeg and yt-dlp.</p><div class="cr-links"><a href="https://github.com/nodejs/node" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://nodejs.org" target="_blank" rel="noopener noreferrer">nodejs.org</a></div></li>
+          <li><div class="cr-top"><b>Chromium</b><span class="cr-lic">BSD</span></div><p>The engine behind the Cutsona window (through Chrome or Edge): video playback and WebGL effects.</p><div class="cr-links"><a href="https://github.com/chromium/chromium" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://www.chromium.org" target="_blank" rel="noopener noreferrer">chromium.org</a></div></li>
+          <li><div class="cr-top"><b>curl</b><span class="cr-lic">curl license</span></div><p>Fetches search results and files from the web.</p><div class="cr-links"><a href="https://github.com/curl/curl" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://curl.se" target="_blank" rel="noopener noreferrer">curl.se</a></div></li>
+          <li><div class="cr-top"><b>Python</b><span class="cr-lic">PSF</span></div><p>Runs faster-whisper for the word timing.</p><div class="cr-links"><a href="https://github.com/python/cpython" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://www.python.org" target="_blank" rel="noopener noreferrer">python.org</a></div></li>
+          <li><div class="cr-top"><b>Archivo</b><span class="cr-lic">SIL OFL 1.1</span></div><p>The typeface of the Cutsona interface, by Omnibus-Type.</p><div class="cr-links"><a href="https://github.com/Omnibus-Type/Archivo" target="_blank" rel="noopener noreferrer">GitHub</a></div></li>
+        </ul>
+      </section>
+      <section class="set-sec">
+        <h4>Where clips and music come from</h4>
+        <p class="cr-note">Find clips and Find songs search these sites. Every clip and song belongs to the person who made it.</p>
+        <div class="cr-sites"><a href="https://www.youtube.com" target="_blank" rel="noopener noreferrer">YouTube</a><a href="https://www.twitch.tv" target="_blank" rel="noopener noreferrer">Twitch</a><a href="https://kick.com" target="_blank" rel="noopener noreferrer">Kick</a><a href="https://medal.tv" target="_blank" rel="noopener noreferrer">Medal</a><a href="https://www.dailymotion.com" target="_blank" rel="noopener noreferrer">Dailymotion</a><a href="https://getyarn.io" target="_blank" rel="noopener noreferrer">Yarn</a><a href="https://giphy.com" target="_blank" rel="noopener noreferrer">GIPHY</a><a href="https://www.thepartwhere.com" target="_blank" rel="noopener noreferrer">thepartwhere.com</a><a href="https://mixkit.co" target="_blank" rel="noopener noreferrer">Mixkit</a><a href="https://www.pexels.com" target="_blank" rel="noopener noreferrer">Pexels</a><a href="https://pixabay.com" target="_blank" rel="noopener noreferrer">Pixabay</a><a href="https://openverse.org" target="_blank" rel="noopener noreferrer">Openverse</a><a href="https://commons.wikimedia.org" target="_blank" rel="noopener noreferrer">Wikimedia Commons</a><a href="https://destockd.com" target="_blank" rel="noopener noreferrer">Destockd</a><a href="https://archival-footage.com" target="_blank" rel="noopener noreferrer">Archival Footage</a><a href="https://freemusicarchive.org" target="_blank" rel="noopener noreferrer">Free Music Archive</a><a href="https://ccmixter.org" target="_blank" rel="noopener noreferrer">ccMixter</a><a href="https://archive.org" target="_blank" rel="noopener noreferrer">Internet Archive</a><a href="https://freesound.org" target="_blank" rel="noopener noreferrer">Freesound</a><a href="https://en.wikiquote.org" target="_blank" rel="noopener noreferrer">Wikiquote</a></div>
+      </section>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<div class="dropveil" id="dropveil"><div>Drop clips or a song</div></div>
+<div id="pool" aria-hidden="true"></div>
+<input type="file" id="fileClips" accept="video/*,image/*,.mkv,.mov,.flv,.ts,.m4v" multiple hidden>
+<input type="file" id="fileFolder" webkitdirectory multiple hidden>
+<input type="file" id="fileMusic" accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,video/mp4" hidden>
+<script>try { for (const k of Object.keys(localStorage)) if (/^(em|slax)\./.test(k)) { const n = 'cutsona.' + k.slice(k.indexOf('.') + 1); if (localStorage.getItem(n) == null) localStorage.setItem(n, localStorage.getItem(k)); localStorage.removeItem(k); } } catch {}</script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

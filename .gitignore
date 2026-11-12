@@ -1,0 +1,33 @@
+# --- never publish these ---
+# your Pexels / Pixabay API keys
+config.json
+# local paths to your Python + Whisper model (has your Windows user name in it)
+transcription.config.json
+.env
+.env.*
+
+# downloaded clips, previews, transcripts, crowd/brain data
+cache/
+# videos you made
+exports/
+# yt-dlp.exe and the face/person detector models are downloaded automatically on first run
+bin/
+
+# tooling
+node_modules/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+Thumbs.db
+
+# your own app settings (the export folder path has your Windows user name in it)
+cutsona-settings.json
+slax-settings.json
+
+# what Cutsona prints while it runs in the background
+cutsona.log
+slax.log
+
+# copies of the files an update replaced (kept on this PC only)
+.update-backup/

@@ -5,7 +5,9 @@ Preview takes side by side, refine the cuts on a timeline, and export the one yo
 
 <p align="center"><a href="https://github.com/Cutsona/Cutsona/releases/latest"><strong>Download for Windows</strong></a> · <a href="#install-from-powershell">PowerShell install</a> · <a href="docs/GUIDE.md">User guide</a></p>
 
-![Cutsona Edit Mode with four previews, clip framing controls, and the timeline](brand/screenshot.png)
+![Cutsona Edit Mode with six Graffiti Road Trip takes and the beat timeline](brand/screenshot.png)
+
+Edit Mode footage from StreetStream’s [Graffiti Road Trip Tampere](https://www.youtube.com/watch?v=kkLjoAoBLoQ).
 
 ## Install on Windows
 
@@ -29,13 +31,15 @@ Run this in **PowerShell** or the PowerShell tab in **Windows Terminal**. It dow
 
 ### Clipper Mode
 
-![Clipper Mode previewing portrait takes with the caption and layout controls in the sidebar](brand/clipper-mode.png)
+![Clipper Mode previewing portrait highlights from CaseOh’s Fall Guys stream](brand/clipper-mode.png)
+
+Clipper Mode footage from the Fall Guys segment of [CaseOh’s Twitch VOD](https://www.twitch.tv/videos/2930232350).
 
 ### Quick Mode
 
 ![Topic to Video with four editable takes, settings on the left, and saved projects on the right](brand/quick-mode.png)
 
-Demo footage in the screenshots uses NASA's [Blue Marble](https://science.nasa.gov/resource/blue-marble-2002/) and [Apollo 8 Earthrise](https://images.nasa.gov/details/as08-14-2383).
+Quick Mode imagery from NASA’s [Blue Marble](https://science.nasa.gov/resource/blue-marble-2002/) and [Apollo 8 Earthrise](https://images.nasa.gov/details/as08-14-2383).
 
 ## Editing tools
 

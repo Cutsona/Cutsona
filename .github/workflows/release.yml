@@ -15,11 +15,25 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Verify the release version
+        shell: pwsh
+        run: |
+          $v = (Get-Content version.json -Raw | ConvertFrom-Json).version
+          $pkg = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json -AsHashtable
+          if ($v -notmatch '^\d+\.\d+\.\d+$' -or $env:GITHUB_REF_NAME -ne "v$v" -or $pkg -ne $v -or $lock.version -ne $v -or $lock.packages[''].version -ne $v) {
+            throw 'The release tag and package versions must match version.json.'
+          }
       - run: npm ci
       - run: npm test
       - name: Get FFmpeg and yt-dlp
         run: node desktop/fetch-tools.js
+      # Signed when the repository has the secrets WIN_CSC_LINK (the .pfx certificate, base64) and WIN_CSC_KEY_PASSWORD
+      # (see RELEASING.md). Without them the installer is built unsigned, as before.
       - name: Build the installer
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: npx electron-builder --win --publish never
       # one release, created once, with the installer, its update files and the notes from CHANGELOG.md
       - name: Publish the release
@@ -27,12 +41,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $v = '${{ github.ref_name }}'.TrimStart('v')
+          $v = $env:GITHUB_REF_NAME.Substring(1)
           $log = [IO.File]::ReadAllText("$PWD/CHANGELOG.md", [Text.Encoding]::UTF8)
           $esc = [regex]::Escape($v)
           $notes = ([regex]::Match($log, "(?ms)^##\s+v?$esc\b[^\n]*\n(.*?)(?=^##\s[^#]|\z)")).Groups[1].Value.Trim()
           $title = ([regex]::Match($log, "(?m)^##\s+v?$esc\b\s*[-:]?\s*(.*)$")).Groups[1].Value.Trim()
-          $notes += "`n`n**Install:** download ``Cutsona-Setup-$v.exe`` below and open it."
+          if (-not $title -or -not $notes) { throw "Add release notes for $v to CHANGELOG.md." }
+          $notes += "`n`n**Install** by downloading ``Cutsona-Setup-$v.exe`` below and opening it."
           [IO.File]::WriteAllText("$PWD/notes.md", $notes, (New-Object Text.UTF8Encoding $false))
           $name = "Cutsona $v" + $(if ($title) { " - $title" } else { '' })
-          gh release create "v$v" "dist/Cutsona-Setup-$v.exe" "dist/Cutsona-Setup-$v.exe.blockmap" "dist/latest.yml" --title $name --notes-file notes.md --latest
+          gh release create "v$v" "dist/Cutsona-Setup-$v.exe" "dist/Cutsona-Setup-$v.exe.blockmap" "dist/latest.yml" --verify-tag --title $name --notes-file notes.md --latest

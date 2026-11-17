@@ -50,10 +50,9 @@ export function loadVision() {
         return null;
       };
       const face = await make(mp.FaceDetector, { baseOptions: { modelAssetPath: '/vision/face.tflite' }, runningMode: 'IMAGE', minDetectionConfidence: 0.5 });
-      const person = await make(mp.ObjectDetector, { baseOptions: { modelAssetPath: '/vision/person.tflite' }, runningMode: 'IMAGE',
-        scoreThreshold: 0.25, categoryAllowlist: ['person'], maxResults: 8 });
-      if (!face && !person) throw new Error('face detector could not start');
-      return { face, person };
+      // faces only (1.2): bodies, shirts and background figures are no longer tracked
+      if (!face) throw new Error('face detector could not start');
+      return { face, person: null };
     })();
     visionP.catch(() => { visionP = null; });
   }
@@ -142,11 +141,12 @@ export function subjectGroup(faces = [], people = []) {
 
 // Short-range face models lose small/stylized faces when a wide frame is reduced.
 // Overlapping square crops give them enough detail without adding another model.
-export function detectFaces(detector, canvas, people = [], tile = null) {
+export function detectFaces(detector, canvas, people = [], tile = null, memo = null) {
   if (!detector) return [];
   const W = canvas.width, H = canvas.height;
   let faces = boxes(detector.detect(canvas), W, H);
-  if (people.length || faces.some(f => f.score >= 0.75) || Math.max(W, H) / Math.min(W, H) < 1.3) return faces;
+  if (people.length || faces.some(f => f.score >= 0.75)) return faces;
+  if (Math.max(W, H) / Math.min(W, H) >= 1.3) {
   const size = Math.min(W, H);
   tile ||= typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(size, size) : document.createElement('canvas');
   tile.width = size; tile.height = size;
@@ -158,6 +158,33 @@ export function detectFaces(detector, canvas, people = [], tile = null) {
     for (const face of boxes(detector.detect(tile), size, size)) faces.push({ ...face,
       x: (x + face.x * size) / W, y: (y + face.y * size) / H, top: (y + face.top * size) / H,
       w: face.w * size / W, h: face.h * size / H });
+  }
+  }
+  // Still nobody: small faces (a streamer's facecam or a cut-out of them over a busy screen is often only a few
+  // percent of the picture). Zoom in: half- then third-height squares across the frame, and look first where a
+  // face was found last time (memo), so a facecam costs one or two looks per frame instead of dozens.
+  // (with nothing found for a while, the full zoomed search runs on every 4th frame only, so videos with nobody in
+  // them don't get slow)
+  if (memo) memo.n = (memo.n || 0) + 1;
+  const skipZoom = memo && !memo.at && (memo.miss || 0) >= 3 && memo.n % 4 !== 0;
+  if (!skipZoom && !faces.some((f) => f.score >= 0.6)) {
+    const zt = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(256, 256) : Object.assign(document.createElement('canvas'), { width: 256, height: 256 });
+    const zg = zt.getContext('2d'), found = [];
+    const look = (x, y, sz) => {
+      zg.drawImage(canvas, x, y, sz, sz, 0, 0, 256, 256);
+      for (const f of boxes(detector.detect(zt), 256, 256)) if (f.score >= 0.6) found.push({ ...f, x: (x + f.x * sz) / W, y: (y + f.y * sz) / H, top: (y + f.top * sz) / H, w: f.w * sz / W, h: f.h * sz / H });
+    };
+    const m = memo && memo.at;
+    if (m) look(Math.max(0, Math.min(W - m.s, m.x)), Math.max(0, Math.min(H - m.s, m.y)), m.s);
+    for (const sz of [Math.round(Math.min(W, H) / 2), Math.round(Math.min(W, H) / 3)]) {
+      if (found.length) break;
+      for (let y = 0; y + sz <= H + 1 && !found.length; y += sz / 2) for (let x = 0; x + sz <= W + 1; x += sz / 2) {
+        look(Math.min(W - sz, x), Math.min(H - sz, y), sz);
+        if (found.length) { if (memo) memo.at = { x: Math.round(found[0].x * W - sz / 2), y: Math.round(found[0].y * H - sz / 2), s: sz }; break; }
+      }
+    }
+    if (memo) { if (found.length) memo.miss = 0; else { memo.at = null; memo.miss = (memo.miss || 0) + 1; } }
+    faces.push(...found);
   }
   // Keep the strongest detection of each face, rather than counting overlapping tiles as people.
   const unique = [];
@@ -183,6 +210,7 @@ export async function analyzeTrack(clip, onProgress, isCancelled) {
     const dur = clip.duration || v.duration;
     if (!Number.isFinite(dur) || dur <= 0 || !v.videoWidth) throw new Error('Video is not ready for tracking');
     const n = Math.max(2, Math.min(600, Math.ceil(dur * 4)));
+    const zoomMemo = {}; // where a small face was found (see detectFaces)
     const scale = Math.min(1, 640 / Math.max(v.videoWidth, v.videoHeight));
     const W = Math.max(2, Math.round(v.videoWidth * scale)), H = Math.max(2, Math.round(v.videoHeight * scale));
     const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
@@ -191,23 +219,22 @@ export async function analyzeTrack(clip, onProgress, isCancelled) {
     const mg = mc.getContext('2d', { willReadFrequently: true });
     const raw = new Array(n).fill(null);
     let prevPix = null, prev = null;
+    const gallery = faceGallery();
 
     // Run both detectors: a face must not prevent body detection.
     const sample = async (i, t) => {
       if (remote) {
         const bitmap = await createImageBitmap(v, { resizeWidth: W, resizeHeight: H });
         raw[i] = await remote.call('sample', { bitmap, t }, [bitmap]);
+        gallery.add(v, raw[i].faces, t, raw[i].cut);
         if (onProgress && i % 4 === 0) onProgress(i / n);
         return;
       }
       g.drawImage(v, 0, 0, W, H);
-      let pick = null;
+      let pick = null, localFaces = [], seen = [];
       if (vis) {
-        let faces = [];
-        let ppl = [];
-        try { if (vis.person) ppl = boxes(vis.person.detect(cv), W, H); } catch {}
-        try { faces = detectFaces(vis.face, cv, ppl); } catch {}
-        pick = selectSubject(faces, ppl, prev);
+        try { seen = detectFaces(vis.face, cv, [], null, zoomMemo); } catch {}
+        pick = selectSubject(seen, [], prev);
       }
       // motion centroid (where things are moving)
       mg.drawImage(v, 0, 0, 64, 36);
@@ -226,15 +253,15 @@ export async function analyzeTrack(clip, onProgress, isCancelled) {
       prevPix = px;
       let group = null, found = null;
       if (vis) {
-        let faces = [], people = [];
-        try { if (vis.person) people = boxes(vis.person.detect(cv), W, H); } catch {}
-        try { faces = detectFaces(vis.face, cv, people); } catch {}
+        const faces = seen, people = [];
         if (cut) { prev = null; pick = selectSubject(faces, people, null); }
         group = subjectGroup(faces, people);
         found = personBoxes(faces, people);
+        localFaces = faces;
       }
       prev = pick || (cut ? null : prev);
-      raw[i] = { t, pick, mot, cut, group, boxes: found || [] };
+      raw[i] = { t, pick, mot, cut, group, boxes: found || [], faces: localFaces };
+      gallery.add(v, localFaces, t, cut);
       if (onProgress && i % 4 === 0) onProgress(i / n);
     };
 
@@ -250,11 +277,180 @@ export async function analyzeTrack(clip, onProgress, isCancelled) {
       await sample(i, v.currentTime);
     }
     onProgress?.(1);
-    return { ...buildTrack(raw, dur), background: !!remote };
+    return { ...buildTrack(raw, dur), background: !!remote, people: await gallery.people(), peopleV: PEOPLE_V };
   } finally {
     v.removeAttribute('src'); v.load(); v.remove();
   }
 }
+
+// ---------------- the faces in a clip, as small pictures ----------------
+// Every face big enough to see is followed from one sample to the next inside a shot (a "tracklet": surely the
+// same person). Each tracklet gets a face fingerprint from a face recognition model (face-api, a few crops per
+// tracklet), and tracklets are grouped into people: the most alike first, never two that are on screen at the
+// same time (two faces in one frame are two people). Without the model, colors and light / dark pattern are used.
+let faceApiP = null, faceApiDead = false;
+function faceApi() {
+  if (faceApiDead) return Promise.resolve(null);
+  if (!faceApiP) faceApiP = (async () => {
+    const m = await import('./vendor/faceapi/face-api.esm.js');
+    try { await m.tf.setBackend('webgl'); await m.tf.ready(); } catch { await m.tf.setBackend('cpu'); await m.tf.ready(); }
+    await m.nets.faceRecognitionNet.loadFromUri(new URL('./vendor/faceapi/model', import.meta.url).href);
+    return m;
+  })().catch((e) => { console.warn('face recognition unavailable', e); faceApiDead = true; return null; });
+  return faceApiP;
+}
+export function faceGallery() {
+  const S = 64, cv = document.createElement('canvas'); cv.width = S; cv.height = S;
+  const g = cv.getContext('2d', { willReadFrequently: true });
+  const E = 112; // crop size for the recognition model
+  const tracks = [];
+  let last = [], samples = 0;
+  const describe = (d) => {
+    const hist = new Float32Array(12), grid = new Float32Array(64);
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+      const k = (y * S + x) * 4, r = d[k] / 255, gg = d[k + 1] / 255, b = d[k + 2] / 255;
+      const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b), c = mx - mn, l = (mx + mn) / 2;
+      let h = 0;
+      if (c > 1e-3) h = mx === r ? ((gg - b) / c + 6) % 6 : mx === gg ? (b - r) / c + 2 : (r - gg) / c + 4;
+      const sat = c / (1 - Math.abs(2 * l - 1) + 1e-3);
+      hist[Math.min(5, Math.floor(h)) * 2 + (sat > 0.35 ? 1 : 0)] += 0.2 + c;
+      grid[Math.floor(y / 8) * 8 + Math.floor(x / 8)] += l;
+    }
+    const hs = hist.reduce((a, v) => a + v, 0) || 1; for (let i = 0; i < 12; i++) hist[i] /= hs;
+    const m = grid.reduce((a, v) => a + v, 0) / 64; let n = 0;
+    for (let i = 0; i < 64; i++) { grid[i] -= m; n += grid[i] * grid[i]; }
+    n = Math.sqrt(n) || 1; for (let i = 0; i < 64; i++) grid[i] /= n;
+    return { hist, grid };
+  };
+  const ddist = (a, b) => {
+    let h = 0, dot = 0;
+    for (let i = 0; i < 12; i++) h += Math.abs(a.hist[i] - b.hist[i]);
+    for (let i = 0; i < 64; i++) dot += a.grid[i] * b.grid[i];
+    return 0.6 * h / 2 + 0.4 * (1 - dot) / 2;
+  };
+  const edist = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); };
+  return {
+    add(video, faces, t, cut) {
+      const k = samples++;
+      const vw = video.videoWidth, vh = video.videoHeight;
+      if (cut) last = [];
+      if (!vw || !faces?.length) { last = []; return; }
+      const now = [];
+      for (const f of faces) {
+        if ((f.score ?? 1) < 0.6 || f.h < 0.03) continue;
+        // a square around the face, a little bigger than it (hair, chin)
+        const side = Math.max(f.w * vw, f.h * vh) * 1.5, sx = f.x * vw - side / 2, sy = f.y * vh - side / 2;
+        try { g.clearRect(0, 0, S, S); g.drawImage(video, sx, sy, side, side, 0, 0, S, S); } catch { continue; }
+        const desc = describe(g.getImageData(0, 0, S, S).data);
+        if (globalThis.__czFaceDump) globalThis.__czFaceDump.push({ k, t, cut: !!cut, x: f.x, y: f.y, w: f.w, h: f.h, score: f.score ?? 1, big: Array.from(g.getImageData(0, 0, S, S).data) });
+        // the same face as a moment ago (same shot, about the same place)
+        let tr = last.find((p) => !now.some((q) => q.tr === p.tr) && Math.hypot(p.x - f.x, p.y - f.y) < Math.max(p.w, f.w) * 0.7)?.tr;
+        if (!tr) { tr = { n: 0, ks: new Set(), seen: [], q: 0, thumb: '', dsum: null, crops: [], weak: null, wq: 0 }; tracks.push(tr); }
+        tr.n++; tr.ks.add(k);
+        tr.seen.push({ t: Math.round(t * 100) / 100, x: f.x, y: f.y, w: f.w, h: f.h });
+        if (!tr.dsum) tr.dsum = { hist: Float32Array.from(desc.hist), grid: Float32Array.from(desc.grid) };
+        else { for (let i = 0; i < 12; i++) tr.dsum.hist[i] += desc.hist[i]; for (let i = 0; i < 64; i++) tr.dsum.grid[i] += desc.grid[i]; }
+        // a few clear looks at this face for the recognition model (a sure, front-on detection); for a tracklet with
+        // none (a turned head, the back of a head) its best look, used only to join it to someone found clearly
+        const sure = (f.score ?? 1) >= 0.85;
+        if (sure ? tr.crops.length < 4 && (!tr.crops.length || tr.n % 5 === 0) : !tr.crops.length && (f.score ?? 1) > tr.wq) {
+          const c = document.createElement('canvas'); c.width = E; c.height = E;
+          try { c.getContext('2d').drawImage(video, sx, sy, side, side, 0, 0, E, E); if (sure) tr.crops.push(c); else { tr.weak = c; tr.wq = f.score ?? 1; } } catch {}
+        }
+        // the clearest, biggest look at this face becomes its picture
+        const q = (f.score ?? 1) * f.h;
+        if (q > tr.q * 1.15) { tr.q = q; tr.thumb = cv.toDataURL('image/jpeg', 0.82); }
+        now.push({ x: f.x, y: f.y, w: f.w, tr });
+      }
+      last = now;
+    },
+    // every person of the clip, most seen first (only a face caught once or twice is left out)
+    async people() {
+      const T = tracks.filter((tr) => tr.thumb);
+      if (!T.length) return [];
+      // face fingerprints, a few crops at a time
+      let useE = false;
+      const api = await faceApi();
+      if (api) {
+        try {
+          const all = [];
+          T.forEach((tr, i) => (tr.crops.length ? tr.crops : tr.weak ? [tr.weak] : []).forEach((c) => all.push([i, c])));
+          const sums = T.map(() => null), cnt = T.map(() => 0);
+          for (let s0 = 0; s0 < all.length; s0 += 16) {
+            const part = all.slice(s0, s0 + 16);
+            let ds = await api.nets.faceRecognitionNet.computeFaceDescriptor(part.map((x) => x[1]));
+            if (!Array.isArray(ds)) ds = [ds];
+            ds.forEach((d, j) => { const i = part[j][0]; if (!sums[i]) sums[i] = new Float32Array(d.length); for (let q = 0; q < d.length; q++) sums[i][q] += d[q]; cnt[i]++; });
+            await new Promise((r) => setTimeout(r, 0)); // let the app breathe between batches
+          }
+          T.forEach((tr, i) => { tr.emb = sums[i] ? sums[i].map((v) => v / cnt[i]) : null; });
+          useE = T.every((tr) => tr.emb);
+        } catch (e) { console.warn('face fingerprints failed', e); }
+      }
+      if (!useE) T.forEach((tr) => {
+        const h = tr.dsum.hist.map((v) => v / tr.n), gr = tr.dsum.grid.slice();
+        let n = 0; for (const v of gr) n += v * v; n = Math.sqrt(n) || 1;
+        tr.d = { hist: h, grid: gr.map((v) => v / n) };
+      });
+      T.forEach((tr) => { tr.good = !useE || tr.crops.length > 0; tr.crops = []; tr.weak = null; }); // done with the crops
+      // average-linkage grouping, never joining two that share a moment
+      const N = T.length, TH = useE ? 0.47 : 0.2;
+      const D = Array.from({ length: N }, () => new Float32Array(N));
+      for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) D[i][j] = D[j][i] = useE ? edist(T[i].emb, T[j].emb) : ddist(T[i].d, T[j].d);
+      if (globalThis.__czFaceEmb) T.forEach((tr) => globalThis.__czFaceEmb.push({ e: tr.emb && Array.from(tr.emb), ks: [...tr.ks], n: tr.n, good: tr.good, thumb: tr.thumb }));
+      // only clear faces start or join groups; the unclear ones are joined to a group afterwards
+      const cl = T.map((tr, i) => ({ alive: tr.good, size: 1, trs: [tr], ks: new Set(tr.ks), i }));
+      const shares = (a, b) => { const [x, y] = a.ks.size < b.ks.size ? [a.ks, b.ks] : [b.ks, a.ks]; for (const v of x) if (y.has(v)) return true; return false; };
+      for (;;) {
+        let best = null;
+        for (let i = 0; i < N; i++) {
+          if (!cl[i].alive) continue;
+          for (let j = i + 1; j < N; j++) {
+            if (!cl[j].alive || D[i][j] >= TH || (best && D[i][j] >= best[0])) continue;
+            if (shares(cl[i], cl[j])) continue;
+            best = [D[i][j], i, j];
+          }
+        }
+        if (!best) break;
+        const [, i, j] = best, a = cl[i], b = cl[j];
+        for (let k = 0; k < N; k++) if (k !== i && k !== j && cl[k].alive) D[i][k] = D[k][i] = (a.size * D[i][k] + b.size * D[j][k]) / (a.size + b.size);
+        a.size += b.size; a.trs.push(...b.trs); for (const v of b.ks) a.ks.add(v); b.alive = false;
+      }
+      // a turned head / back of a head: joins the closest group it can belong to, or is left out
+      T.forEach((tr, i) => {
+        if (tr.good) return;
+        let best = null;
+        for (let j = 0; j < N; j++) {
+          const c = cl[j]; if (!c.alive || shares(c, { ks: tr.ks })) continue;
+          let d = 0; for (const o of c.trs) d += edist(tr.emb, o.emb); d /= c.trs.length;
+          if (d < 0.42 && (!best || d < best[0])) best = [d, c];
+        }
+        if (best) { best[1].trs.push(tr); for (const v of tr.ks) best[1].ks.add(v); }
+      });
+      // last: a small group that looks like a bigger one (a face seen in other light) joins it
+      if (useE) for (;;) {
+        const live = cl.filter((c) => c.alive), cnt = (c) => c.trs.reduce((s, tr) => s + tr.n, 0);
+        let best = null;
+        for (let x = 0; x < live.length; x++) for (let y = x + 1; y < live.length; y++) {
+          const a = live[x], b = live[y];
+          if (Math.min(cnt(a), cnt(b)) > 20 || shares(a, b)) continue;
+          let d = 0; for (const p of a.trs) for (const q of b.trs) d += edist(p.emb, q.emb); d /= a.trs.length * b.trs.length;
+          if (d < 0.5 && (!best || d < best[0])) best = [d, a, b];
+        }
+        if (!best) break;
+        const [, a, b2] = best; a.trs.push(...b2.trs); for (const v of b2.ks) a.ks.add(v); b2.alive = false;
+      }
+      const min = Math.max(2, Math.round(samples * 0.004));
+      return cl.filter((c) => c.alive).map((c) => {
+        const n = c.trs.reduce((s, tr) => s + tr.n, 0), top = c.trs.reduce((a, tr) => (tr.q > a.q ? tr : a));
+        return { n, thumb: top.thumb, seen: c.trs.flatMap((tr) => tr.seen).sort((x, y) => x.t - y.t) };
+      }).filter((p) => p.n >= min).sort((a, b) => b.n - a.n).slice(0, 40)
+        .map((p, k) => ({ id: 'p' + (k + 1), name: `Person ${k + 1}`, thumb: p.thumb, n: p.n, share: p.n / Math.max(1, samples), seen: p.seen }));
+    },
+  };
+}
+// the version of the face grouping: clips grouped by an older one are scanned again when their faces are shown
+export const PEOPLE_V = 2;
 
 // Fill detector gaps from anchors in the SAME shot, never the middle of the frame.
 export function shotPicks(samples) {

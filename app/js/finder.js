@@ -1,5 +1,7 @@
 // Clip Finder: movies/TV by mood or quote, exact moments (thepartwhere.com), streamer clips (by channel, game or trending), gaming, viral & news,
 // free stock footage, or paste any link.
+import { sentencesOf, searchSentences, smartStart, smartEnd, fmtT, markWords } from './words.js';
+import { analyzeViral, viralMoments, scorePart, sentenceHtml, scoreColor } from './viral.js';
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmtDur = (s) => { if (!s && s !== 0) return ''; s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
@@ -20,7 +22,7 @@ const MOVIE_MOODS = [
   { k: 'goodbye', l: 'Goodbye', scene: 'emotional goodbye scene', top: 'most emotional goodbye', say: 'goodbye' },
 ];
 const MOVIE_SOURCES = [
-  ['youtube', 'YouTube'], ['shorts', 'Shorts'], ['MOVIECLIPS', 'Movieclips'], ['Netflix', 'Netflix'], ['PrimeVideo', 'Prime Video'],
+  ['youtube', 'YouTube'], ['MOVIECLIPS', 'Movieclips'], ['Netflix', 'Netflix'], ['PrimeVideo', 'Prime Video'],
   ['Crunchyroll', 'Crunchyroll'], ['dailymotion', 'Dailymotion'], ['yarn', 'Quotes (Yarn)'], ['giphy', 'GIPHY reactions'],
 ];
 const GAME_MOODS = [
@@ -106,9 +108,12 @@ const MUSIC_TIPS = {
 const MOMENT_PICKS = ['Joker', 'The Matrix', 'Interstellar', 'Breaking Bad', 'Fight Club', 'The Dark Knight', 'Spider-Man', 'Harry Potter', 'John Wick', 'Peaky Blinders', 'The Wolf of Wall Street', 'Dune', 'Avengers', 'Demon Slayer'];
 const MOVIE_KINDS = { all: '', movies: 'movie', tv: 'tv show', anime: 'anime' };
 
-export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
+export function initFinder({ grab, grabSong, toast, hasClip = () => true, addFile = null, explainViral = null, isStream = () => false, hasMusic = () => false, onRandom = null }) {
+  let pickSession = null;
+  let editing = null, openedForEdit = false; // a clip from the clip list being edited in the preview: { id, setPart, part, sound, close }
   // a download whose clip you've since removed from your list doesn't count as added anymore
   function liveJob(key) {
+    if (pickSession) return null;
     const j = st.jobs.get(key);
     if (j && j.clipId && !j.audio && !hasClip(j.clipId)) {
       st.jobs.delete(key);
@@ -117,8 +122,8 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     }
     return j;
   }
-  const SAVE_KEYS = ['tab', 'kind', 'msrc', 'platform', 'range', 'short', 'smode', 'tsrc', 'csub', 'en', 'gsrc', 'vsrc', 'sub', 'rrange', 'when', 'chan', 'skind', 'vprov', 'pprov', 'orient', 'musrc', 'quality'];
-  const st = { tab: 'movies', kind: 'all', msrc: 'youtube', platform: 'twitch', range: 'week', short: true, smode: 'streamer', tsrc: 'all', csub: 'LivestreamFail', en: true, musrc: 'ytsong', mumood: null, quality: 'any',
+  const SAVE_KEYS = ['order', 'tab', 'kind', 'msrc', 'platform', 'range', 'short', 'smode', 'tsrc', 'csub', 'en', 'gsrc', 'vsrc', 'sub', 'rrange', 'when', 'chan', 'skind', 'vprov', 'pprov', 'orient', 'musrc', 'quality', 'shmood'];
+  const st = { order: 'top', tab: 'movies', kind: 'all', msrc: 'youtube', platform: 'twitch', range: 'week', short: true, smode: 'streamer', tsrc: 'all', csub: 'LivestreamFail', en: true, musrc: 'ytsong', mumood: null, quality: 'any',
     gsrc: 'medal', vsrc: 'feeds', sub: 'LivestreamFail', rrange: 'week', when: 'week', chan: 'NBA', skind: 'video', vprov: 'mixkit', pprov: 'openverse', orient: 'vertical',
     mood: null, gmood: null, smood: null, ntopic: null, stmood: null, items: [], loading: false, jobs: new Map(), added: 0, keys: { pexels: false, pixabay: false } };
   try { const sv = JSON.parse(localStorage.getItem('cutsona.finder2') || '{}'); for (const k of SAVE_KEYS) if (k in sv) st[k] = sv[k]; } catch {}
@@ -127,6 +132,8 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
   if (!MUSIC_SOURCES.some(([k]) => k === st.musrc)) st.musrc = 'ytsong';
   try { if (!localStorage.getItem('cutsona.videos2')) { st.kind = 'all'; localStorage.setItem('cutsona.videos2', '1'); } } catch {}
   if (!(st.kind in MOVIE_KINDS)) st.kind = 'all';
+  if (st.msrc === 'shorts') { st.msrc = 'youtube'; st.tab = 'shorts'; } // Shorts has its own tab now
+  if (st.tab === 'parts') st.tab = 'movies'; // "Find a part" lives in every preview now
   if (!VIRAL_FEEDS.some(([k]) => k === st.sub)) st.sub = 'LivestreamFail';
   if (!['day', 'week', 'month', 'year', 'all'].includes(st.rrange)) st.rrange = 'week';
   st.ytq = YT_STREAMERS[0];
@@ -141,6 +148,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       <div class="fd-head">
         <div class="fd-title">Find clips</div>
         <div class="fd-tabs"></div>
+        <button class="fd-rand" title="Random: grab random footage and make an edit of it">🎲 Random</button>
         <button class="fd-close" title="Back to editor (Esc)">Back to editor</button>
       </div>
       <div class="fd-controls"></div>
@@ -152,7 +160,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
   const controls = $('.fd-controls', root), results = $('.fd-results', root), preview = $('.fd-preview', root);
 
   // Two windows: "Find clips" (video tabs) and "Find songs" (music sources as its tabs)
-  const CLIP_TABS = [['movies', 'Videos'], ['moments', 'Exact moments'], ['streams', 'Streamers'], ['gaming', 'Gaming'], ['viral', 'Viral &amp; News'], ['stock', 'Free stock'], ['link', 'Paste link']];
+  const CLIP_TABS = [['movies', 'YouTube'], ['shorts', 'Shorts'], ['moments', 'Exact moments'], ['streams', 'Streamers'], ['gaming', 'Gaming'], ['viral', 'Viral &amp; News'], ['stock', 'Free stock'], ['link', 'Paste link']];
   let songs = false;
   function renderTabs() {
     $('.fd-title', root).textContent = songs ? 'Find songs' : 'Find clips';
@@ -172,25 +180,33 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     st.items = []; st.error = null; st.showKeys = false; save(); renderTabs(); renderControls(); renderResults(); autoSearch();
   });
   $('.fd-close', root).onclick = close;
+  $('.fd-rand', root).onclick = () => randomEdit();
   window.addEventListener('keydown', (e) => {
     if (root.hidden) return;
-    if (e.key === 'Escape') { if (!preview.hidden) closePreview(); else close(); e.stopPropagation(); }
+    if (e.key === 'Escape') { if (!preview.hidden) closePreview(true); else close(); e.stopPropagation(); }
   }, true);
 
-  function open(tab) {
+  function open(tab, onPick = null, { returnLabel = 'Back to Quick project', wholeVideo = false } = {}) {
+    pickSession = onPick ? { onPick, busy: false, wholeVideo, returnTo: document.activeElement } : null;
+    $('.fd-rand', root).hidden = !!pickSession || tab === 'music';
+    $('.fd-close', root).textContent = '← ' + (pickSession ? returnLabel : 'Back to editor');
     songs = tab === 'music';
     if (songs) st.tab = 'music'; else { if (tab) st.tab = tab; if (st.tab === 'music') st.tab = 'movies'; }
     if (root.dataset.was !== String(songs)) { st.items = []; st.error = null; }
     root.dataset.was = String(songs);
     renderTabs(); root.hidden = false; refreshKeys().then(() => { renderControls(); renderResults(); }); renderControls(); renderResults(); if (!st.items.length && !st.loading) autoSearch(); setTimeout(() => $('.fd-controls input[type=text], .fd-controls textarea', root)?.focus(), 30); }
-  function close() { closePreview(); root.hidden = true; }
+  function close() {
+    const returnTo = pickSession?.returnTo;
+    pickSession = null; closePreview(); stopSong(); root.hidden = true;
+    returnTo?.focus();
+  }
 
   // ---------- small builders ----------
   const chips = (list, cur, attr, all = true) => `<div class="fd-chips">${all ? `<button class="chip all${cur == null ? ' on' : ''}" data-${attr}="">All</button>` : ''}${list.map((m) => `<button class="chip${cur === m.k ? ' on' : ''}" data-${attr}="${esc(m.k)}">${m.l}</button>`).join('')}</div>`;
   const seg = (name, opts, cur) => `<div class="seg fd-seg" data-name="${name}">${opts.map(([v, l]) => `<button data-v="${esc(v)}" class="${String(cur) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>`;
   const row = (label, html, extra = '') => `<div class="fd-row"${extra}>${label ? `<span class="fd-lbl">${label}</span>` : ''}${html}</div>`;
   const input = (cls, ph, val) => `<input type="text" class="fd-q ${cls || ''}" placeholder="${esc(ph)}" value="${esc(val || '')}">`;
-  const shortBox = () => `<label class="fd-check"><input type="checkbox" class="fd-short" ${st.short ? 'checked' : ''}> Short clips only (under 4 min)</label>`;
+  const shortBox = () => `<label class="fd-check"><input type="checkbox" class="fd-short" ${st.short ? 'checked' : ''}> Short videos only (under 4 min, no Shorts)</label>`;
   const RANGES = [['day', '24h'], ['week', '7 days'], ['month', '30 days'], ['all', 'All time']];
 
   function renderControls() {
@@ -206,6 +222,10 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
         input('', ph, st.q) + `<button class="primary fd-go">Search</button>`);
       if (!yarn) h += row('Mood', chips(MOVIE_MOODS, st.mood, 'mood'));
       h += `<div class="fd-row fd-sub">${['youtube', 'dailymotion'].includes(st.msrc) ? shortBox() : `<span class="fd-tip">${yarn ? 'Yarn finds the exact second a line is said in thousands of movies & shows: great for quote edits.' : st.msrc === 'giphy' ? 'Short looping reactions.' : st.msrc === 'shorts' ? 'Vertical YouTube Shorts: ready for 9:16 edits.' : 'Official channel: clean, labeled scenes.'}</span>`}</div>`;
+    } else if (st.tab === 'shorts') {
+      h += row('', input('', 'Search Shorts: e.g. funny animals, street interviews, edits, Kai Cenat', st.sq2) + `<button class="primary fd-go">Search</button>`);
+      h += row('Mood', chips(MOVIE_MOODS, st.shmood, 'shmood'));
+      h += `<div class="fd-row fd-sub"><span class="fd-tip">Vertical YouTube Shorts, ready for 9:16. Open one to find any part of it by what’s said.</span></div>`;
     } else if (st.tab === 'moments') {
       if (!st.mtitles && !st.mtLoading) loadMomentTitles();
       const T = st.mtitles || { titles: [], memes: [], sports: [] };
@@ -241,7 +261,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
         h += row('Popular', `<div class="fd-chips">${(game ? POPULAR_GAMES : POPULAR[st.platform]).map((c) => `<button class="chip ghosty" data-pick="${esc(c)}">${esc(c)}</button>`).join('')}</div>` +
           (game && st.platform === 'twitch' ? `<label class="fd-check"><input type="checkbox" class="fd-en" ${st.en ? 'checked' : ''}> English only</label>` : ''));
       }
-      h += row('Vibe', chips(STREAM_MOODS, st.smood, 'smood') + `<span class="fd-tip">Filters by clip title, sorted by most viewed</span>`);
+      h += row('Vibe', chips(STREAM_MOODS, st.smood, 'smood') + ``);
     } else if (st.tab === 'gaming') {
       h += row('From', seg('gsrc', [['medal', 'Medal.tv'], ['twitch', 'Twitch clips'], ['kick', 'Kick clips'], ['youtube', 'YouTube'], ['shorts', 'Shorts']], st.gsrc));
       h += row('', input('', 'Game: e.g. Fortnite, Valorant, Minecraft, GTA V, Fall Guys', st.gq) +
@@ -303,6 +323,12 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
         </div>
         <div class="fd-row fd-sub"><span class="fd-tip">Tip: press <kbd>Ctrl</kbd>+<kbd>V</kbd> anywhere in the editor to grab a copied link.</span></div>`;
     }
+    if (showsSort()) {
+      const includesTwitch = (st.tab === 'streams' && (st.smode === 'trending' ? ['twitch', 'all'].includes(st.tsrc) : st.platform === 'twitch'))
+        || (st.tab === 'gaming' && st.gsrc === 'twitch') || (st.tab === 'viral' && st.vsrc === 'feeds' && st.sub === 'LivestreamFail');
+      const hint = includesTwitch ? 'Twitch sorts its most-viewed clips by date in Cutsona.' : 'Latest clips and uploads first.';
+      h += row('Show', seg('order', [['top', 'Most viewed'], ['new', 'Newest']], st.order) + `<span class="fd-tip">${st.order === 'new' ? hint : ''}</span>`);
+    }
     if (showsQuality()) {
       h += row('Quality', seg('quality', [['any', 'Any'], ['hd', 'HD 1080p+'], ['4k', '4K only']], st.quality) +
         `<span class="fd-tip">${st.quality === '4k' ? 'Only videos available in 4K: they download in 4K for the sharpest crops and zooms.' : 'Badges on each video show its quality: <b class="fd-res q-4k">4K</b> ones download in 4K.'}</span>`);
@@ -310,9 +336,18 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     controls.innerHTML = h;
     bindControls();
   }
+  // sources that can list their newest clips / uploads first
+  function showsSort() {
+    if (st.tab === 'movies') return ['youtube', 'dailymotion'].includes(st.msrc);
+    if (st.tab === 'shorts' || st.tab === 'streams') return !(st.tab === 'streams' && st.smode === 'trending' && st.tsrc === 'shorts');
+    if (st.tab === 'gaming') return ['twitch', 'kick', 'youtube', 'shorts'].includes(st.gsrc);
+    if (st.tab === 'viral') return ['shorts', 'news', 'feeds'].includes(st.vsrc);
+    return false;
+  }
   // sources that know (or can filter by) video quality
   function showsQuality() {
-    if (st.tab === 'movies') return ['youtube', 'shorts'].includes(st.msrc);
+    if (st.tab === 'movies') return st.msrc === 'youtube';
+    if (st.tab === 'shorts') return true;
     if (st.tab === 'gaming') return ['youtube', 'shorts'].includes(st.gsrc);
     if (st.tab === 'viral') return ['shorts', 'news'].includes(st.vsrc) || (st.vsrc === 'feeds' && st.sub !== 'LivestreamFail');
     if (st.tab === 'stock') return st.skind !== 'photo' && ['pexels', 'pixabay', 'commons'].includes(st.vprov) && (!NEEDS_KEY[st.vprov] || st.keys[st.vprov]);
@@ -327,7 +362,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       <li>Copy your API key and paste it here.</li></ol>
       <div class="fd-row"><input type="text" class="fd-keyin" placeholder="Paste your ${isPx ? 'Pexels' : 'Pixabay'} API key"><button class="primary fd-savekey">Save key</button>
       ${st.keys[prov] ? '<button class="small fd-cancelkey">Cancel</button>' : ''}</div>
-      <small>No key? Pick Mixkit, Openverse or Wikimedia above: they work right away.</small>
+      <small>No key? Pick Mixkit, Openverse or Wikimedia above: they work right away. All your keys: Settings → API keys.</small>
       <small>Saved only on this PC (Cutsona\\config.json).</small></div>`;
   }
 
@@ -336,7 +371,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       const b = e.target.closest('button'); if (!b) return;
       const name = sg.dataset.name;
       st[name] = b.dataset.v; save();
-      if (['msrc', 'smode', 'platform', 'gsrc', 'vsrc', 'skind', 'vprov', 'pprov', 'tsrc', 'musrc', 'quality'].includes(name)) { st.items = []; st.error = null; st.showKeys = false; }
+      if (['msrc', 'smode', 'platform', 'gsrc', 'vsrc', 'skind', 'vprov', 'pprov', 'tsrc', 'musrc', 'quality', 'order'].includes(name)) { st.items = []; st.error = null; st.showKeys = false; }
       if (name === 'musrc') st.mumood = null; // sound moods and music moods differ
       renderControls(); renderResults(); autoSearch();
     }));
@@ -345,7 +380,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       st[key] = v === null ? null : st[key] === v && !['sub', 'chan', 'csub'].includes(key) ? null : v;
       save(); renderControls(); after();
     }));
-    pick('mood', 'mood', search); pick('gmood', 'gmood', () => (['youtube', 'shorts'].includes(st.gsrc) ? search() : renderResults()));
+    pick('mood', 'mood', search); pick('shmood', 'shmood', search); pick('gmood', 'gmood', () => (['youtube', 'shorts'].includes(st.gsrc) ? search() : renderResults()));
     pick('smood', 'smood', renderResults); pick('ntopic', 'ntopic', search); pick('stmood', 'stmood', search);
     pick('sub', 'sub', search); pick('csub', 'csub', search); pick('chan', 'chan', search); pick('mumood', 'mumood', search);
     const songGo = $('.fd-songgo', controls);
@@ -361,7 +396,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     if (q) {
       q.addEventListener('input', () => {
         const v = q.value;
-        if (st.tab === 'movies') st.q = v; else if (st.tab === 'moments') st.mq = v; else if (st.tab === 'gaming') st.gq = v; else if (st.tab === 'streams') { if (st.smode === 'trending') st.ytq = v; else if (st.smode === 'game') st.sg = v; else st.ch = v; }
+        if (st.tab === 'movies') st.q = v; else if (st.tab === 'shorts') st.sq2 = v; else if (st.tab === 'moments') st.mq = v; else if (st.tab === 'gaming') st.gq = v; else if (st.tab === 'streams') { if (st.smode === 'trending') st.ytq = v; else if (st.smode === 'game') st.sg = v; else st.ch = v; }
         else if (st.tab === 'viral') { if (st.vsrc === 'news' || st.vsrc === 'shorts') st.nq = v; else st.cq = v; } else if (st.tab === 'stock') st.sq = v;
         else if (st.tab === 'music') st.muq = v;
       });
@@ -407,7 +442,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
 
   function buildRequest() {
     const qual = showsQuality() && st.quality !== 'any' ? { quality: st.quality } : {};
-    const P = (o) => '/api/finder/search?' + new URLSearchParams({ n: '50', ...o, ...qual }).toString();
+    const P = (o) => '/api/finder/search?' + new URLSearchParams({ n: '50', ...o, ...qual, ...(showsSort() && st.order === 'new' ? { newest: '1' } : {}) }).toString();
     if (st.tab === 'movies') {
       const m = MOVIE_MOODS.find((x) => x.k === st.mood);
       const text = (st.q || '').trim();
@@ -435,6 +470,11 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       if (st.msrc === 'giphy') return { url: P({ source: 'giphy', q: text || (m ? m.k : `${kind} reaction`) }) };
       if (st.msrc === 'dailymotion') return { url: P({ source: 'dailymotion', q: text || m ? q : `${kind} clip`, short: st.short ? '1' : '0' }) };
       return { url: P({ source: 'ytchannel', handle: st.msrc, q: [text, m && m.k].filter(Boolean).join(' ') }) };
+    }
+    if (st.tab === 'shorts') {
+      const m = MOVIE_MOODS.find((x) => x.k === st.shmood), text = (st.sq2 || '').trim();
+      if (/^https?:\/\//i.test(text)) return { link: text };
+      return { url: P({ source: 'shorts', q: [text, m && m.l.toLowerCase()].filter(Boolean).join(' ') || 'viral' }) };
     }
     if (st.tab === 'moments') return { url: P({ source: 'moments', q: (st.mq || '').trim(), title: (st.mtitle || '').trim() }) };
     if (st.tab === 'streams') {
@@ -506,6 +546,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     if (b.link) { addOne({ url: b.link }); return; }
     if (b.song) { addOne({ url: b.song, title: null, audio: true }); return; }
     const seq = ++searchSeq;
+    stopSong();
     st.loading = true; st.loadingMore = false; st.error = null; st.page = 1; st.more = false; st.reqUrl = b.url; renderResults();
     results.scrollTop = 0;
     // YouTube: show the first page of results straight away (under a second), then the full list behind it
@@ -535,6 +576,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       }
       st.items = dedupe(j.items || []);
       st.more = !!j.more;
+      if (j.note) toast(j.note);
       if (!st.items.length) st.error = showsQuality() && st.quality !== 'any'
         ? `No ${st.quality === '4k' ? '4K' : 'HD'} videos found for that: try other words, or set Quality to Any.`
         : 'Nothing found: try other words or a longer time range.';
@@ -547,7 +589,9 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
   }
   function dedupe(list, have = []) {
     const seen = new Set(have.map((x) => x.url));
-    return list.filter((x) => x && x.url && !seen.has(x.url) && seen.add(x.url));
+    // the YouTube tab never shows Shorts (they have their own tab)
+    const noShorts = st.tab === 'movies' && st.msrc === 'youtube';
+    return list.filter((x) => x && x.url && !(noShorts && (x.shorts || /#shorts?\b/i.test(x.title || ''))) && !seen.has(x.url) && seen.add(x.url));
   }
   async function loadMore() {
     if (!st.more || st.loadingMore || st.loading || !st.reqUrl) return;
@@ -597,12 +641,18 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     }
   }, { root: results, rootMargin: '600px 0px' }) : null;
   function bindCard(el) {
+    if (el.classList.contains('fd-song')) return bindSong(el);
     const th = el.querySelector('.fd-thumb');
     if (th?.dataset.bg) { if (thumbSeen) thumbSeen.observe(th); else th.style.backgroundImage = `url("${th.dataset.bg.replace(/"/g, '%22')}")`; }
     const it = st.items[Number(el.dataset.i)];
-    el.querySelector('.fd-add').onclick = (e) => { e.stopPropagation(); addOne(it); };
+    // Add: a video opens its preview first (viral moments, Smart trim, the part or the whole clip); a song or a photo
+    // is added right away. A clip already being added / added just shows that.
+    el.querySelector('.fd-add').onclick = (e) => {
+      e.stopPropagation();
+      const job = liveJob(jobKey(it));
+      if (playable(it) && !(job && job.status !== 'error')) openPreview(it); else addOne(it);
+    };
     el.querySelector('.fd-thumb').onclick = () => openPreview(it);
-    el.querySelector('.fd-prev').onclick = () => openPreview(it);
   }
   function appendCards() {
     const grid = $('.fd-grid', results);
@@ -613,7 +663,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     st.items.forEach((it, i) => {
       if (shown.has(i)) return;
       if (words) { const t = ' ' + (it.title || '').toLowerCase() + ' '; if (!words.some((w) => t.includes(w))) return; }
-      html += card(it, i);
+      html += it.audio ? songRow(it, i) : card(it, i);
     });
     const tmp = document.createElement('div');
     tmp.innerHTML = html;
@@ -637,7 +687,9 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
   function renderResults() {
     const cnt = $('.fd-count', root); if (cnt && (st.loading || st.error || !st.items.length)) cnt.textContent = '';
     if (st.tab === 'link') { results.innerHTML = renderLinkJobs(); bindJobButtons(); return; }
-    if (st.loading) { results.innerHTML = `<div class="fd-empty"><div class="spinner"></div>Searching…</div>`; return; }
+    if (st.loading) { results.innerHTML = songs
+      ? `<div class="fd-grid songs">${Array.from({ length: 8 }, (_, k) => `<div class="fd-skel song" style="--d:${k * 60}ms"><i></i><b></b><span></span></div>`).join('')}</div>`
+      : `<div class="fd-grid">${Array.from({ length: 12 }, (_, k) => `<div class="fd-skel" style="--d:${k * 45}ms"><i></i><b></b><span></span></div>`).join('')}</div>`; return; }
     if (st.error) { results.innerHTML = `<div class="fd-empty err">${esc(st.error)}</div>`; return; }
     if (!st.items.length) {
       const hints = {
@@ -651,7 +703,7 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     }
     const v = visibleItems();
     results.innerHTML = (v.none ? `<div class="fd-note">No titles matched that vibe: showing all clips.</div>` : '') +
-      `<div class="fd-grid">${v.list.map((it) => card(it, st.items.indexOf(it))).join('')}</div><div class="fd-more"></div>`;
+      `<div class="fd-grid${songs ? ' songs' : ''}">${v.list.map((it, k) => (it.audio ? songRow(it, st.items.indexOf(it), k) : card(it, st.items.indexOf(it), k))).join('')}</div><div class="fd-more"></div>`;
     results.querySelectorAll('.fd-card').forEach(bindCard);
     renderMore();
   }
@@ -664,11 +716,126 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
   }
   // songs and clips are tracked separately (the same YouTube link can be both)
   function jobKey(it) { return (it.audio ? 'song:' : '') + it.url; }
-  function card(it, i) {
+  // ---------- songs: a list of tracks with their sound wave (no videos), played right in the list ----------
+  // The wave is the real one when the song's preview can be read here (free music sites); YouTube songs show
+  // a wave shaped from the title until they're played.
+  const songAudio = new Audio();
+  songAudio.preload = 'none';
+  let songNow = null; // { i, el }
+  const peaksCache = new Map();
+  const seeded = (str, n) => { let h = 2166136261; for (const ch of String(str)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const out = []; for (let k = 0; k < n; k++) { h = Math.imul(h ^ (h >>> 13), 1274126177); const r = ((h >>> 0) % 1000) / 1000; out.push(0.25 + 0.55 * r * (0.6 + 0.4 * Math.sin(k / 5))); } return out; };
+  const songPlayUrl = (it) => `/api/finder/stream?audio=1&url=${encodeURIComponent(pageOf(it))}`;
+  function songSrc(it) { return it.preview || (st.musrc === 'ytsong' || it.source === 'youtube' ? songPlayUrl(it) : it.url); }
+  function songRow(it, i, k = 0) {
+    const job = liveJob(jobKey(it));
+    const meta = [it.channel, it.license].filter(Boolean).map(esc).join(' · ');
+    return `<div class="fd-card fd-song audio ${job ? 'job-' + job.status : ''}" data-i="${i}" style="--d:${Math.min(k, 24) * 18}ms">
+      <button class="fd-sp" title="Play here" aria-label="Play ${esc(it.title)}"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+      <i class="fd-sart" ${it.thumb ? `data-bg="${esc(it.thumb)}"` : ''}><b>♪</b></i>
+      <div class="fd-sinfo"><b title="${esc(it.title)}">${esc(it.title)}</b><small>${meta || SRC_LABEL[it.source] || ''}</small></div>
+      <canvas class="fd-swave" title="Click to play from there"></canvas>
+      <span class="fd-sdur">${it.duration ? fmtDur(it.duration) : ''}</span>
+      <button class="fd-add${job && job.status === 'done' ? ' done' : ''}">${esc(jobLabel(job) || 'Use as song')}</button>
+    </div>`;
+  }
+  function drawSongWave(el) {
+    const it = st.items[Number(el.dataset.i)], cv = el.querySelector('.fd-swave'); if (!it || !cv) return;
+    const r = cv.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+    if (!r.width) return;
+    cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+    const g = cv.getContext('2d'), W = cv.width, H = cv.height, n = Math.max(20, Math.floor(r.width / 3.2));
+    const real = peaksCache.get(it.url), isReal = Array.isArray(real), pk = isReal ? resample(real, n) : seeded(it.title + it.url, n);
+    const playing = songNow && songNow.el === el, p = playing && songAudio.duration ? songAudio.currentTime / songAudio.duration : -1;
+    const acc = getComputedStyle(document.documentElement).getPropertyValue('--tape').trim() || '#ffc933';
+    g.clearRect(0, 0, W, H);
+    const bw = W / n;
+    for (let k = 0; k < n; k++) {
+      const h = Math.max(2 * dpr, pk[k] * H * 0.92), x = k * bw;
+      g.fillStyle = p >= 0 && k / n <= p ? acc : isReal ? 'rgba(242,240,234,0.55)' : 'rgba(242,240,234,0.22)';
+      g.fillRect(x + bw * 0.18, (H - h) / 2, Math.max(1, bw * 0.64), h);
+    }
+  }
+  function resample(a, n) { const out = []; for (let k = 0; k < n; k++) { const s = Math.floor((k / n) * a.length), e = Math.max(s + 1, Math.floor(((k + 1) / n) * a.length)); let m = 0; for (let j = s; j < e; j++) m = Math.max(m, a[j]); out.push(m); } return out; }
+  // read a song preview's real wave (two at a time, only for songs on screen)
+  let peakBusy = 0; const peakQ = [];
+  function wantPeaks(el) {
+    const it = st.items[Number(el.dataset.i)];
+    if (!it || !it.preview || !/^https:|^\/api\/audio/.test(it.preview) || peaksCache.has(it.url)) return;
+    peaksCache.set(it.url, 'busy'); peakQ.push(el); pumpPeaks();
+  }
+  async function pumpPeaks() {
+    while (peakBusy < 2 && peakQ.length) {
+      const el = peakQ.shift(), it = st.items[Number(el.dataset.i)];
+      if (!it) continue;
+      peakBusy++;
+      (async () => {
+        try {
+          const src = it.preview.startsWith('/api/audio?u=') ? decodeURIComponent(it.preview.slice(13)) : it.preview;
+          const r = await fetch('/api/peaks?u=' + encodeURIComponent(src)), j = await r.json();
+          if (!r.ok || !Array.isArray(j.peaks)) throw new Error(j.error || 'no wave');
+          peaksCache.set(it.url, j.peaks);
+        } catch { peaksCache.set(it.url, 'fail'); }
+        peakBusy--; if (el.isConnected) drawSongWave(el); pumpPeaks();
+      })();
+    }
+  }
+  const songSeen = 'IntersectionObserver' in window ? new IntersectionObserver((ents) => {
+    for (const en of ents) if (en.isIntersecting) { songSeen.unobserve(en.target); const art = en.target.querySelector('.fd-sart'); if (art?.dataset.bg) art.style.backgroundImage = `url("${art.dataset.bg.replace(/"/g, '%22')}")`; drawSongWave(en.target); wantPeaks(en.target); }
+  }, { root: results, rootMargin: '300px 0px' }) : null;
+  function bindSong(el) {
+    const it = st.items[Number(el.dataset.i)];
+    if (songSeen) songSeen.observe(el); else requestAnimationFrame(() => drawSongWave(el));
+    el.querySelector('.fd-add').onclick = (e) => { e.stopPropagation(); addOne(it); };
+    el.querySelector('.fd-sp').onclick = () => playSong(el);
+    el.querySelector('.fd-swave').addEventListener('pointerdown', (e) => {
+      const r = e.currentTarget.getBoundingClientRect(), f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      if (!songNow || songNow.el !== el) playSong(el, f); else if (songAudio.duration) songAudio.currentTime = f * songAudio.duration;
+    });
+  }
+  function stopSong() {
+    if (!songNow) return;
+    const was = songNow.el; clearTimeout(songNow.timer); songNow = null;
+    try { songAudio.pause(); } catch {}
+    was.classList.remove('playing', 'loading');
+    was.querySelector('.fd-sp').innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+    drawSongWave(was);
+  }
+  function playSong(el, at = 0) {
+    const it = st.items[Number(el.dataset.i)]; if (!it) return;
+    if (songNow && songNow.el === el) { if (songAudio.paused) songAudio.play().catch(() => {}); else songAudio.pause(); return; }
+    stopSong();
+    songNow = { el };
+    el.classList.add('playing', 'loading');
+    songAudio.src = songSrc(it);
+    songAudio.volume = Number(localStorage.getItem('cutsona.pvVol') || 0.8);
+    songAudio.onloadedmetadata = () => { if (at > 0 && songAudio.duration) songAudio.currentTime = at * songAudio.duration; };
+    el.querySelector('.fd-serr')?.remove();
+    songAudio.onplaying = () => { el.classList.remove('loading'); clearTimeout(songNow?.timer); };
+    const fail = async (why) => {
+      if (songNow?.el !== el) return;
+      stopSong();
+      // ask Cutsona why (deleted, private, age-restricted, blocked…)
+      if (!why && !it.preview) { try { const r = await fetch(songPlayUrl(it) + '&check=1'), j = await r.json(); if (!r.ok) why = j.error; } catch {} }
+      why = why || 'The site didn’t send it (it may be deleted or moved).';
+      el.classList.add('cant');
+      el.querySelector('.fd-sinfo').insertAdjacentHTML('beforeend', `<em class="fd-serr" title="${esc(why)}">Can’t play: ${esc(why)}</em>`);
+      toast(`“${it.title}” can’t play: ${why}`, true);
+    };
+    songAudio.onerror = () => fail('');
+    songNow.timer = setTimeout(() => { if (songNow?.el === el && songAudio.paused && songAudio.readyState < 3) fail('It took too long to start: the site may be slow or blocking it.'); }, 25000);
+    songAudio.play().catch(() => {});
+  }
+  songAudio.addEventListener('play', () => { if (songNow) songNow.el.querySelector('.fd-sp').innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>'; });
+  songAudio.addEventListener('pause', () => { if (songNow) songNow.el.querySelector('.fd-sp').innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>'; });
+  songAudio.addEventListener('timeupdate', () => { if (songNow && songNow.el.isConnected) drawSongWave(songNow.el); });
+  songAudio.addEventListener('ended', stopSong);
+
+  function card(it, i, k = 0) {
     const job = liveJob(jobKey(it));
     const long = it.source === 'youtube' && it.duration > 600;
     const meta = [it.license || it.channel, it.moment ? 'at ' + fmtDur(it.start) : '', it.views != null ? fmtViews(it.views) : '', it.game, it.via ? 'via ' + it.via : ''].filter(Boolean).map(esc).join(', ');
-    return `<div class="fd-card ${job ? 'job-' + job.status : ''} ${it.audio ? 'audio' : ''}" data-i="${i}">
+    return `<div class="fd-card ${job ? 'job-' + job.status : ''} ${it.audio ? 'audio' : ''}" data-i="${i}" style="--d:${Math.min(k, 24) * 22}ms">
       <div class="fd-thumb ${it.audio && !it.thumb ? 'note' : ''}" data-bg="${esc(it.thumb || '')}">
         <span class="fd-src ${it.shorts ? 'shorts' : it.moment ? 'moment' : it.source}">${it.shorts ? 'Shorts' : it.moment ? 'Moment' : SRC_LABEL[it.source] || it.source}</span>
         ${it.res && !it.audio ? `<span class="fd-res q-${it.res.toLowerCase()}" title="${it.res === '4K' ? 'Available in 4K: downloads in 4K' : it.res === 'HD' ? 'Available in HD' : it.res + ' video'}">${it.res}</span>` : ''}
@@ -679,13 +846,25 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
         <div class="fd-name" title="${esc(it.title)}">${esc(it.title)}</div>
         <div class="fd-meta">${meta}${long ? ', <b>grabs best 90s</b>' : ''}</div>
       </div>
-      <div class="fd-actions"><button class="small fd-prev">Preview</button><button class="fd-add${job && job.status === 'done' ? ' done' : ''}">${esc(jobLabel(job) || (it.audio ? 'Use as song' : 'Add'))}</button></div>
+      <div class="fd-actions"><button class="fd-add${job && job.status === 'done' ? ' done' : ''}">${esc(jobLabel(job) || (it.audio ? 'Use as song' : 'Add'))}</button></div>
     </div>`;
   }
 
   async function addOne(item, extra = {}) {
     const whole = item.moment && extra.start == null; // a moment card: just its exact seconds
     if (whole) extra = { ...extra, start: item.start, end: item.end };
+    const picker = pickSession;
+    if (picker) {
+      if (picker.busy) return;
+      picker.busy = true;
+      try {
+        const maxRes = item.res === '4K' || (st.quality === '4k' && showsQuality()) ? 2160 : undefined;
+        await picker.onPick({ ...item, ...extra, audio: songs || !!item.audio, maxRes });
+        if (pickSession === picker) close();
+      } catch (e) { toast(e.message, true); }
+      finally { picker.busy = false; }
+      return;
+    }
     const base = jobKey(item), key = base + (extra.start != null && !whole ? '@' + extra.start : '');
     const existing = liveJob(key);
     // a song can be picked again any time (e.g. to switch back to it); clips are only added once
@@ -723,8 +902,9 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
       results.querySelectorAll('.fd-card').forEach((el) => {
         const it = st.items[Number(el.dataset.i)], job = it && liveJob(jobKey(it));
         const b = el.querySelector('.fd-add');
-        if (job) { b.textContent = jobLabel(job); b.classList.toggle('done', job.status === 'done'); el.className = 'fd-card job-' + job.status + (it.audio ? ' audio' : ''); }
-        else if (it && b.classList.contains('done')) { b.textContent = it.audio ? 'Use as song' : 'Add'; b.classList.remove('done'); el.className = 'fd-card' + (it.audio ? ' audio' : ''); }
+        const jobCls = () => [...el.classList].filter((c) => c.startsWith('job-')).forEach((c) => el.classList.remove(c));
+        if (job) { b.textContent = jobLabel(job); b.classList.toggle('done', job.status === 'done'); jobCls(); el.classList.add('job-' + job.status); }
+        else if (it && b.classList.contains('done')) { b.textContent = it.audio ? 'Use as song' : 'Add'; b.classList.remove('done'); jobCls(); }
       });
     });
   }
@@ -749,87 +929,612 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     st.links = ''; renderControls(); renderResults();
   }
 
-  // ---------- preview ----------
-  let ytPlayer = null;
-  function loadYT() {
-    if (window.YT && window.YT.Player) return Promise.resolve();
-    return new Promise((res) => {
-      window.onYouTubeIframeAPIReady = res;
-      const s = document.createElement('script'); s.src = 'https://www.youtube.com/iframe_api'; document.head.appendChild(s);
-      setTimeout(res, 6000);
-    });
+  // ---------- preview: Cutsona's own player, search inside the video, pick any part of any length ----------
+  // Lengths you can pick with one click. Click a length to use it, "+ Save" keeps the length you typed,
+  // right-click (or ×) removes one. Kept on this PC.
+  const LEN_KEY = 'cutsona.partLens';
+  let partLens = [5, 10, 15, 30, 60];
+  try { const v = JSON.parse(localStorage.getItem(LEN_KEY) || 'null'); if (Array.isArray(v) && v.every((x) => x > 0)) partLens = v; } catch {}
+  // 30 seconds is always a choice (the most-used length for Shorts / Reels / TikTok)
+  const KEEP_LENS = [30];
+  for (const k of KEEP_LENS) if (!partLens.includes(k)) partLens = [...partLens, k].sort((x, y) => x - y);
+  const saveLens = () => { try { localStorage.setItem(LEN_KEY, JSON.stringify(partLens)); } catch {} };
+  const lenName = (s) => (s >= 60 && s % 60 === 0 ? `${s / 60}m` : s >= 60 ? `${Math.floor(s / 60)}m${Math.round(s % 60)}s` : `${+s.toFixed(1)}s`);
+  let pv = null; // the open preview: { it, video, words, sents, a, b, len, smart, hits }
+  // the page a video lives on (what yt-dlp and the caption reader understand)
+  const pageOf = (it) => (it.source === 'youtube' && it.id ? `https://www.youtube.com/watch?v=${it.id}` : /^https?:\/\//i.test(it.page || '') ? it.page : it.url);
+  const playable = (it) => !it.audio && !it.photo;
+  function playUrl(it) {
+    if (it.source === 'twitch' || it.source === 'kick') return `/api/finder/hover?url=${encodeURIComponent(it.url)}&full=1`;
+    if (it.direct) return it.preview || it.url;
+    return `/api/finder/stream?url=${encodeURIComponent(pageOf(it))}`;
   }
+
   async function openPreview(it) {
+    closePreview(false, !!(it.edit && editing?.id === it.edit));
     preview.hidden = false;
-    const isYT = it.source === 'youtube';
-    const long = isYT && it.duration > 600;
+    const long = it.source === 'youtube' && it.duration > 600;
+    if (!playable(it)) return openSimplePreview(it);
+    const words = true; // every video gets "Find a part": captions when it has them, otherwise Cutsona listens to it
+    const len0 = Math.min(partLens.includes(15) ? 15 : partLens[0] || 15, it.duration || 15);
+    pv = { it, words: null, sents: [], a: it.moment ? it.start : 0, b: it.moment ? it.end : len0, len: it.moment ? it.end - it.start : len0, smart: true, hits: [], q: '', pick: it.moment ? null : len0 };
+    // a clip from your clip list: its own part, and nothing is picked for you
+    if (it.edit) { pv.a = it.part[0]; pv.b = it.part[1]; pv.len = pv.b - pv.a; pv.touched = true; pv.pick = null; }
+    preview.innerHTML = `<div class="fd-pv big ${words ? 'with-side' : ''}">
+      ${fileTabs.length ? tabsHtml() : ''}
+      <div class="fd-pv-h"><span class="fd-src ${it.edit ? 'clip' : it.shorts ? 'shorts' : it.moment ? 'moment' : esc(it.source)}">${it.edit ? 'Your clip' : it.shorts ? 'Shorts' : it.moment ? 'Moment' : SRC_LABEL[it.source] || esc(it.source)}</span>
+        <b title="${esc(it.title)}">${esc(it.title)}</b><span class="fd-pv-dur">${it.duration ? fmtDur(it.duration) : ''}</span><button class="small fd-pv-x">Close</button></div>
+      <div class="fd-pv-body">
+        <div class="fd-pv-main">
+          <div class="fd-pv-video">
+            <video class="fd-v" playsinline preload="auto" poster="${esc(it.thumb || '')}"></video>
+            <div class="fd-pv-load"><div class="spinner"></div><span>Opening in the Cutsona player…</span><small>The first time, Cutsona gets a copy of the video: a few seconds</small></div>
+            <button class="fd-bigplay" aria-label="Play" hidden><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+          </div>
+          <div class="fd-pv-bar">
+            <button class="fd-ctl fd-c-play" title="Play / pause (Space)" aria-label="Play or pause"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+            <span class="fd-c-time">0:00.0</span>
+            <div class="fd-scrub" title="Click or drag to move around the video">
+              <canvas class="fd-s-heat" aria-hidden="true"></canvas><div class="fd-s-vm"></div>
+              <div class="fd-s-buf"></div><div class="fd-s-range"><i class="fd-h a" title="Drag to move the start"></i><i class="fd-h b" title="Drag to move the end"></i></div><div class="fd-s-marks"></div><div class="fd-s-played"></div><div class="fd-s-head"></div>
+              <div class="fd-s-tip" hidden></div>
+            </div>
+            <span class="fd-c-dur">${it.duration ? fmtDur(it.duration) : ''}</span>
+            <button class="fd-ctl fd-c-back" title="Back 5 seconds (←)" aria-label="Back 5 seconds"><svg viewBox="0 0 24 24"><path d="M11 6 5 12l6 6M19 6l-6 6 6 6"/></svg></button>
+            <button class="fd-ctl fd-c-fwd" title="Forward 5 seconds (→)" aria-label="Forward 5 seconds"><svg viewBox="0 0 24 24"><path d="m13 6 6 6-6 6M5 6l6 6-6 6"/></svg></button>
+            <select class="fd-c-rate" title="Speed" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
+            <button class="fd-ctl fd-c-mute" title="Sound on / off (M)" aria-label="Mute"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/><path class="w" d="M16 9a4 4 0 0 1 0 6M18.5 6.5a7.5 7.5 0 0 1 0 11"/></svg></button>
+            <input class="fd-c-vol" type="range" min="0" max="1" step="0.05" value="${localStorage.getItem('cutsona.pvVol') || 0.8}" aria-label="Volume">
+          </div>
+          ${it.audio ? '' : `<div class="fd-part">
+            <div class="fd-fine" title="Fine trim: a close-up of the part. Drag its edges or the part itself to the exact frame">
+              <button class="fd-ctl fd-fine-play" title="Play just the part (P)" aria-label="Play the part"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+              <span class="fd-fine-t0">0:00.0</span>
+              <div class="fd-fine-bar"><canvas class="fd-fine-heat" aria-hidden="true"></canvas><div class="fd-fine-ticks"></div>
+                <div class="fd-fine-part"><i class="fd-fh a" title="Drag: the exact start"></i><span class="fd-fine-len"></span><i class="fd-fh b" title="Drag: the exact end"></i></div><div class="fd-fine-head"></div></div>
+              <span class="fd-fine-t1">0:00.0</span>
+              <label class="fd-check fd-loop" title="While the part plays, it starts over at its end, so you can watch it again and again while you trim"><input type="checkbox" checked> Loop part</label>
+            </div>
+            <div class="fd-part-row">
+              <button class="fd-mark fd-m-in" title="Start the part here (I)"><small>Start</small><b class="fd-in">0:00.0</b></button>
+              <button class="fd-mark fd-m-out" title="End the part here (O)"><small>End</small><b class="fd-out">0:00.0</b></button>
+              <label class="fd-lenin"><small>Length</small><span><input type="number" class="fd-len" min="0.5" step="0.5" value="${pv.len.toFixed(1)}">s</span></label>
+              <div class="fd-lens" title="Click a length to use it. Right-click to remove one."></div>
+              <label class="fd-check fd-smart" title="Start at the beginning of a sentence and end where a sentence ends, close to your length (needs the video's captions)"><input type="checkbox" checked> Smart edges</label>
+            </div>
+            <div class="fd-part-row fd-trimrow">
+              <button class="small fd-smarttrim" title="Smart trim: the most viral part of this length (a hook at the start, a payoff at the end, whole sentences). Press again for the next best"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M8.1 7.9 20 18M8.1 16.1 20 6"/></svg>Smart trim</button>
+              <span class="fd-pscore" hidden></span>
+              <span class="fd-pwhy"></span>
+            </div>
+            <div class="fd-part-row">
+              <button class="primary fd-pv-addpart">+ Add this part</button>
+              <button class="small fd-pv-add">${it.edit ? 'Use the whole clip' : it.file ? '+ Add the whole video' : it.moment ? `+ Add this moment (${it.duration.toFixed(1)}s)` : pickSession?.wholeVideo ? 'Use whole video' : long ? '+ Add best 90s' : '+ Add whole clip'}</button>
+              <button class="small fd-revert" title="${it.edit ? 'Back to the original video: the whole clip, nothing trimmed or cut out, its sound back to normal' : 'Back to the original video: the whole thing, nothing trimmed, normal speed'}">↺ Revert to original</button>
+              <span class="fd-part-note"></span>
+              ${/^https?:\/\//i.test(it.page || '') ? `<a class="small fd-open" href="${esc(it.page)}" target="_blank" rel="noopener noreferrer">Open on ${SRC_LABEL[it.source] || 'site'}</a>` : ''}
+            </div>
+          </div>`}
+        </div>
+        ${words ? `<aside class="fd-pv-side${it.edit ? ' tabbed' : ''}">
+          ${it.edit ? '<div class="fd-stabs" role="tablist"><button role="tab" class="on" data-stab="find">Viral &amp; words</button><button role="tab" data-stab="sound">Sound</button></div><div class="fd-sound" hidden></div>' : ''}
+          <div class="fd-vr">
+            <div class="fd-vr-h"><b>Viral moments <button class="fd-vr-q" title="What the fire and the number mean">?</button></b><span class="fd-vr-st"><i class="spin"></i>Watching the whole video…</span></div>
+            <div class="fd-vr-list"></div>
+          </div>
+          <div class="fd-ps-h"><b>Find a part</b><small>search what’s said · <span class="vw2">lit words</span> are the likeliest to go viral</small></div>
+          <div class="fd-ps-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="text" class="fd-ps-q" placeholder="A word or a line: e.g. “never give up”" spellcheck="false"><span class="fd-ps-n"></span></div>
+          <div class="fd-ps-list"><div class="fd-empty small"><div class="spinner"></div>Reading what’s said…<small>No captions? Cutsona listens to it instead: that takes about a minute.</small></div></div>
+        </aside>` : ''}
+      </div></div>`;
+    bindPreview();
+    // nothing can be touched until the video is there (its length decides the part, the bar, the lengths)
+    const pvBox = $('.fd-pv', preview); pvBox.classList.add('pv-wait');
+    const ready = () => pvBox.classList.remove('pv-wait');
+    const v = pv.video = $('.fd-v', preview);
+    // the preview playing: the takes behind it stop (one sound at a time, and the computer's power for this one)
+    v.addEventListener('play', () => window.dispatchEvent(new CustomEvent('cutsona:preview-play')));
+    v.volume = Number(localStorage.getItem('cutsona.pvVol') || 0.8);
+    let triedFallback = false;
+    v.addEventListener('error', async () => {
+      if (!pv || triedFallback) return;
+      triedFallback = true;
+      let why = '';
+      try { const r = await fetch(`/api/finder/stream?check=1&url=${encodeURIComponent(pageOf(it))}`), j = await r.json(); if (!r.ok) why = j.error || ''; } catch {}
+      if (!pv || pv.it !== it) return;
+      // no direct stream: YouTube's own player, zoomed so its logo, title and buttons sit outside the picture
+      if (it.source === 'youtube' && it.id) {
+        const box = $('.fd-pv-video', preview);
+        box.classList.add('yt-fallback');
+        box.insertAdjacentHTML('beforeend', `<div class="fd-yt-crop"><iframe referrerpolicy="strict-origin-when-cross-origin" src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(it.id)}?autoplay=1&controls=0&disablekb=1&fs=0&iv_load_policy=3&modestbranding=1&playsinline=1&rel=0&enablejsapi=1&origin=${encodeURIComponent(location.origin)}&start=${Math.floor(pv.a)}" allow="autoplay; encrypted-media"></iframe></div>`);
+        $('.fd-pv-load', preview).hidden = true; ready();
+        $('.fd-part-note', preview).textContent = `Couldn’t open it in the Cutsona player${why ? ` (${why})` : ''}: showing YouTube’s. Pick the part with Start, End and Length.`;
+      } else {
+        $('.fd-pv-load', preview).innerHTML = `<span>This video can’t play here.${why ? ` ${esc(why)}` : ''}</span>${/^https?:\/\//i.test(it.page || '') ? `<a class="small" href="${esc(it.page)}" target="_blank" rel="noopener noreferrer">Watch on ${SRC_LABEL[it.source] || 'site'}</a>` : ''}`;
+      }
+    });
+    v.addEventListener('loadedmetadata', () => {
+      if (!pv) return;
+      $('.fd-pv-load', preview).hidden = true; ready();
+      if (Number.isFinite(v.duration)) {
+        // a video that's still arriving (Kick / Twitch clips stream in pieces) first says it's only a few seconds
+        // long: the length the site gave counts until the video itself knows better
+        const D = Math.max(v.duration, it.duration || 0);
+        $('.fd-c-dur', preview).textContent = fmtDur(D); pv.dur = D;
+        // a part can't run past the end of the video
+        if (pv.b > D) { pv.b = D; pv.a = Math.min(pv.a, Math.max(0, pv.b - 0.5)); pv.len = pv.b - pv.a; }
+        drawMarks();
+      }
+      if (pv.a > 0) v.currentTime = pv.a;
+      v.play().catch(() => { $('.fd-bigplay', preview).hidden = false; });
+      drawPart();
+    });
+    // the real length, once more of it has arrived
+    v.addEventListener('durationchange', () => {
+      if (!pv || !Number.isFinite(v.duration) || v.duration <= (pv.dur || 0) + 0.05) return;
+      pv.dur = v.duration; $('.fd-c-dur', preview).textContent = fmtDur(v.duration);
+      drawMarks(); drawPart(); if (pv.va) renderViral();
+    });
+    v.src = playUrl(it);
+    if (it.edit) {
+      // your clip: its words and its viral scan are already known; its sound settings are right here
+      if (it.words?.length) { pv.words = it.words; pv.sents = sentencesOf(it.words); pv.from = 'speech'; renderHits(); }
+      else if (/^https:\/\//i.test(it.page || '')) loadWords(it);
+      editing?.sound?.($('.fd-sound', preview));
+      if (it.scan) scans.set(`e:${it.edit}`, it.scan);
+    } else if (words && !it.file) loadWords(it);
+    startScan(it);
+  }
+  // songs and photos: the simple window
+  function openSimplePreview(it) {
     preview.innerHTML = `<div class="fd-pv">
       <div class="fd-pv-h"><b>${esc(it.title)}</b><button class="small fd-pv-x">Close</button></div>
-      <div class="fd-pv-video" style="${it.thumb ? `background-image:url('${esc(it.thumb)}')` : ''}"><div id="fdPlayer"></div></div>
+      <div class="fd-pv-video">${it.audio
+        ? `<div class="fd-pv-audio" style="background-image:url('${esc(it.thumb || '')}')"><div class="fd-pv-note">♪</div><audio src="${esc(it.preview || it.url)}" controls autoplay preload="auto"></audio></div>`
+        : `<img class="fd-pv-img" src="${esc(it.url)}" alt="">`}</div>
       <div class="fd-pv-actions">
         ${/^https?:\/\//i.test(it.page || '') ? `<a class="small" href="${esc(it.page)}" target="_blank" rel="noopener noreferrer">Open on ${SRC_LABEL[it.source] || 'site'}</a>` : ''}
-        ${isYT && !it.audio ? `<button class="small fd-pv-cut" data-len="15">+ Add 15s from here</button><button class="small fd-pv-cut" data-len="30">+ Add 30s from here</button><button class="small fd-pv-cut" data-len="60">+ Add 60s from here</button>` : ''}
-        <button class="primary fd-pv-add">${it.audio ? '♪ Use as song' : it.photo ? '+ Add photo as clip' : it.moment ? `+ Add this moment (${it.duration.toFixed(1)}s at ${fmtDur(it.start)})` : long ? '+ Add best 90s' : '+ Add whole clip'}</button>
+        <button class="primary fd-pv-add">${it.audio ? '♪ Use as song' : '+ Add photo as clip'}</button>
       </div></div>`;
     $('.fd-pv-x', preview).onclick = closePreview;
     preview.onclick = (e) => { if (e.target === preview) closePreview(); };
     $('.fd-pv-add', preview).onclick = () => { addOne(it); closePreview(); };
-    const box = $('#fdPlayer', preview);
-    if (isYT) {
-      // "+ Add 15/30/60s from here": the buttons show the exact time they will grab from (live), and
-      // after a click they show the download's progress until the clip is in your clip list
-      const cuts = [...preview.querySelectorAll('.fd-pv-cut')];
-      const nowT = () => { try { return (ytPlayer && ytPlayer.getCurrentTime && ytPlayer.getCurrentTime()) || 0; } catch { return 0; } };
-      cuts.forEach((b) => (b.onclick = () => {
-        const t = nowT(), len = Number(b.dataset.len), start = Math.max(0, t - 0.5), end = t + len;
-        const key = jobKey(it) + '@' + start;
-        b.dataset.job = key; b.dataset.range = `${fmtDur(start)}–${fmtDur(end)}`; b.classList.add('busy');
-        b.textContent = `Getting ${b.dataset.range}…`;
-        addOne({ ...it, title: `${it.title} @${fmtDur(t)}` }, { start, end });
-        toast(`Grabbing ${len}s from ${fmtDur(t)}: it goes into your clip list`);
-      }));
-      clearInterval(pvTick);
-      pvTick = setInterval(() => {
-        if (preview.hidden) { clearInterval(pvTick); return; }
-        const t = nowT();
-        for (const b of cuts) {
-          const job = b.dataset.job && st.jobs.get(b.dataset.job);
-          if (job) {
-            b.textContent = job.status === 'done' ? `✓ Added ${b.dataset.range}` : job.status === 'error' ? `Failed: ${job.error || job.phase || 'try again'}` : `${job.pct > 0 ? `Downloading ${Math.round(job.pct)}%` : `${job.phase || 'Starting'}…`} ${b.dataset.range}`;
-            if (job.status === 'done' || job.status === 'error') {
-              if (!b.dataset.doneAt) b.dataset.doneAt = Date.now();
-              else if (Date.now() - b.dataset.doneAt > 4000) { delete b.dataset.job; delete b.dataset.doneAt; b.classList.remove('busy'); }
-            }
-          } else b.textContent = `+ Add ${b.dataset.len}s from ${fmtDur(t)}`;
-        }
-      }, 250);
-      await loadYT();
-      if (preview.hidden) return;
-      try {
-        ytPlayer = new window.YT.Player(box, { videoId: it.id, width: '100%', height: '100%', playerVars: { autoplay: 1, rel: 0, modestbranding: 1, iv_load_policy: 3, playsinline: 1, ...(it.moment ? { start: Math.max(0, Math.floor(it.start) - 1) } : {}) } });
-      } catch { box.outerHTML = `<iframe src="https://www.youtube.com/embed/${esc(it.id)}?autoplay=1" allow="autoplay; encrypted-media" allowfullscreen></iframe>`; }
-    } else if (it.source === 'twitch' || it.source === 'kick') {
-      box.outerHTML = `<video src="/api/finder/hover?url=${encodeURIComponent(it.url)}&full=1" controls autoplay playsinline></video>`;
-      // can't play it here (clip deleted, site busy): show its picture and a link instead of a broken player
-      $('.fd-pv-video video', preview)?.addEventListener('error', (e) => {
-        e.target.outerHTML = `<div class="fd-pv-fallback" style="background-image:url('${esc(it.thumb || '')}')"><a href="${esc(it.page || it.url)}" target="_blank" rel="noopener noreferrer" class="small">Watch on ${SRC_LABEL[it.source] || 'site'}</a></div>`;
-      }, { once: true });
-    } else if (it.source === 'twitch-embed') {
-      const slug = (/clip\/([^/?#]+)/.exec(it.url) || /clips\.twitch\.tv\/([^/?#]+)/.exec(it.url) || [])[1];
-      box.outerHTML = `<iframe src="https://clips.twitch.tv/embed?clip=${encodeURIComponent(slug || '')}&parent=localhost&autoplay=true" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
-    } else if (it.source === 'dailymotion') {
-      box.outerHTML = `<iframe src="https://www.dailymotion.com/embed/video/${encodeURIComponent(it.id)}?autoplay=1" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
-    } else if (it.audio) {
-      box.outerHTML = `<div class="fd-pv-audio" style="background-image:url('${esc(it.thumb || '')}')"><div class="fd-pv-note">♪</div>
-        <audio src="${esc(it.preview || it.url)}" controls autoplay preload="auto"></audio></div>`;
-    } else if (it.photo) {
-      box.outerHTML = `<img class="fd-pv-img" src="${esc(it.url)}" alt="">`;
-    } else if (it.direct) {
-      box.outerHTML = `<video src="${esc(it.preview || it.url)}" controls autoplay loop playsinline></video>`;
-    } else {
-      box.outerHTML = `<div class="fd-pv-fallback" style="background-image:url('${esc(it.thumb)}')"><a href="${esc(it.page || it.url)}" target="_blank" class="small">Watch on ${SRC_LABEL[it.source] || 'site'}</a></div>`;
+  }
+
+  async function loadWords(it) {
+    const list = () => $('.fd-ps-list', preview);
+    try {
+      const r = await fetch('/api/transcript?url=' + encodeURIComponent(pageOf(it)));
+      const j = await r.json();
+      if (!pv || pv.it !== it) return;
+      if (!r.ok) throw new Error(j.error || 'No captions');
+      // a moment cut from a longer video: the times are already the video's own
+      pv.words = j.words || []; pv.sents = sentencesOf(pv.words); pv.from = j.source;
+      if (!pv.sents.length) throw new Error('This video has no captions to read.');
+      renderHits();
+      if (pv.smart) { applySmart(); drawPart(); }
+    } catch (e) {
+      if (!pv || pv.it !== it) return;
+      pv.words = []; pv.sents = [];
+      list().innerHTML = `<div class="fd-empty small">${esc(e.message)}<br><small>You can still pick a part by its time.</small></div>`;
+      $('.fd-ps-q', preview).disabled = true;
     }
   }
+  // the transcript, with the lines that match the search marked (or just the matches, when searching)
+  function renderHits() {
+    const box = $('.fd-ps-list', preview); if (!box || !pv) return;
+    const q = pv.q.trim();
+    pv.hits = q ? searchSentences(pv.sents, q) : [];
+    const n = $('.fd-ps-n', preview);
+    n.textContent = q ? (pv.hits.length ? `${pv.hits.length} found` : 'not said') : `${pv.sents.length} lines${pv.from === 'speech' ? ', heard' : ''}`;
+    const rows = q ? pv.hits.map((h) => h.s) : pv.sents;
+    const vs = pv.va?.sents, vOf = (s) => vs?.find((x) => Math.abs(x.start - s.start) < 0.01);
+    box.innerHTML = rows.length ? rows.map((s) => { const x = !q && vOf(s); return `<button class="fd-line${x && x.viral >= 0.6 ? ' hot' : ''}" data-t="${s.start}" data-e="${s.end}"${x ? ` title="Viral: ${Math.round(x.viral * 100)}/100${x.kinds.filter((k) => k !== 'you').length ? ` (${x.kinds.filter((k) => k !== 'you').join(', ')})` : ''}"` : ''}><span class="fd-lt">${fmtT(s.start)}</span><span class="fd-lx">${x ? sentenceHtml(x, esc) : markWords(s.text, q)}</span><span class="fd-luse" data-use title="Make this line the part">Use</span></button>`; }).join('')
+      : `<div class="fd-empty small">Nobody says “${esc(q)}” in this video.</div>`;
+    drawMarks();
+  }
+  function drawMarks() {
+    const m = $('.fd-s-marks', preview); if (!m || !pv) return;
+    const D = pv.dur || pv.it.duration || 0;
+    m.innerHTML = D ? pv.hits.map((h) => `<i style="left:${(h.at / D) * 100}%"></i>`).join('') : '';
+  }
+  function applySmart() {
+    if (!pv.smart || !pv.sents.length) return;
+    pv.a = smartStart(pv.sents, pv.a);
+    pv.b = smartEnd(pv.sents, pv.a, pv.len);
+  }
+  // a part of about L seconds from the start you have; when it would run past the end of the video, it slides back
+  // so it still gets its whole length (never longer than the video)
+  function fitPart(L) {
+    const D = pv.dur || pv.it.duration || Infinity, sm = pv.smart && pv.sents.length;
+    L = Math.max(0.5, Math.min(L, D));
+    pv.len = L;
+    let b = sm ? smartEnd(pv.sents, pv.a, L) : pv.a + L;
+    if (b > D) {
+      pv.a = Math.max(0, D - L);
+      if (sm) { const a2 = smartStart(pv.sents, pv.a); if (a2 <= pv.a + 0.5) pv.a = a2; }
+      b = sm ? Math.min(D, smartEnd(pv.sents, pv.a, L)) : Math.min(D, pv.a + L);
+    }
+    pv.b = Math.max(pv.a + 0.5, Math.min(D, b));
+  }
+  // with no words to follow, a part's edges land on a shot change when one is close (a clean cut, not mid-shot)
+  const snapCut = (t) => { const cs = pv?.scan?.cuts; if (!pv.smart || pv.sents.length || !cs?.length) return t; let b = t, bd = 0.6; for (const c of cs) { const d = Math.abs(c - t); if (d < bd) { bd = d; b = c; } } return b; };
+  function setStart(t, keepLen = true) {
+    const D = pv.dur || pv.it.duration || Infinity;
+    pv.touched = true;
+    pv.a = Math.max(0, Math.min(D - 0.5, snapCut(t)));
+    if (pv.smart && pv.sents.length) { const a2 = smartStart(pv.sents, pv.a); if (Math.abs(a2 - pv.a) < 3 && a2 < D - 0.5) pv.a = a2; }
+    pv.b = keepLen ? (pv.smart && pv.sents.length ? smartEnd(pv.sents, pv.a, pv.len) : pv.a + pv.len) : Math.max(pv.b, pv.a + 0.5);
+    if (pv.b > D) { pv.b = D; pv.pick = null; } // (too close to the end for the whole length: the part ends with the video)
+    drawPart();
+  }
+  function setEnd(t) {
+    const D = pv.dur || pv.it.duration || Infinity;
+    pv.touched = true;
+    pv.b = Math.max(pv.a + 0.5, Math.min(D, snapCut(t)));
+    if (pv.smart && pv.sents.length) {
+      // end after the word being said (not in the middle of it)
+      const w = pv.words.find((x) => x.start <= pv.b && x.end >= pv.b - 0.05);
+      if (w) pv.b = Math.min(D, w.end + 0.2);
+    }
+    pv.len = pv.b - pv.a; pv.pick = null;
+    drawPart();
+  }
+  function drawPart() {
+    if (!pv || !preview.querySelector('.fd-part')) return;
+    const L = pv.b - pv.a;
+    $('.fd-in', preview).textContent = fmtT(pv.a);
+    $('.fd-out', preview).textContent = fmtT(pv.b);
+    const li = $('.fd-len', preview); if (document.activeElement !== li) li.value = (+L.toFixed(1)).toString();
+    const job = pv.jobKey && st.jobs.get(pv.jobKey);
+    if (pv.it.edit) {
+      const [ca, cb] = editing?.part?.() || [NaN, NaN], same = Math.abs(ca - pv.a) < 0.06 && Math.abs(cb - pv.b) < 0.06;
+      $('.fd-pv-addpart', preview).textContent = same ? `✓ The clip plays ${fmtT(pv.a)}–${fmtT(pv.b)}` : `Use ${fmtT(pv.a)}–${fmtT(pv.b)} (${lenName(L)})`;
+    } else $('.fd-pv-addpart', preview).textContent = job && job.status !== 'error'
+      ? (job.status === 'done' ? `✓ Added ${fmtT(pv.ja)}–${fmtT(pv.jb)}` : `${job.pct > 0 ? `Downloading ${Math.round(job.pct)}%` : `${job.phase || 'Starting'}…`}`)
+      : `+ Add ${fmtT(pv.a)}–${fmtT(pv.b)} (${lenName(L)})`;
+    // every length: how viral its best part is (the best length is marked), and the whole clip
+    const D0 = pv.dur || pv.it.duration || 0, LB = pv.lenBest || {}, bestL = pv.bestLen;
+    const isWhole = D0 && pv.a < 0.15 && pv.b > D0 - 0.15;
+    $('.fd-lens', preview).innerHTML = partLens.filter((s) => !D0 || s < D0 - 0.5).map((s) => `<button class="chip${KEEP_LENS.includes(s) ? ' keep' : ''}${!isWhole && (pv.pick != null ? pv.pick === s : Math.abs(s - (pv.b - pv.a)) < 0.05) ? ' on' : ''}${s === bestL ? ' best' : ''}" data-len="${s}" title="${LB[s] ? `The most viral ${lenName(s)} part scores ${LB[s].score}${s === bestL ? ': the best length for this video' : ''}. Smart trim jumps to it` : ''}">${lenName(s)}${LB[s] ? `<small class="${scoreColor(LB[s].score)}">${LB[s].score}</small>` : ''}<i data-rmlen="${s}" title="Remove">×</i></button>`).join('')
+      + (D0 ? `<button class="chip${isWhole ? ' on' : ''}" data-len="whole" title="The whole video, start to end">Whole clip ${fmtDur(D0)}${pv.wholeScore != null ? `<small class="${scoreColor(pv.wholeScore)}">${pv.wholeScore}</small>` : ''}</button>` : '')
+      + `<button class="chip ghosty fd-savelen" title="Keep the length you typed as a button">+ Save ${lenName(L)}</button>`;
+    const D = pv.dur || pv.it.duration || 0;
+    const rg = $('.fd-s-range', preview);
+    if (D) { const x0 = Math.min(1, pv.a / D), x1 = Math.min(1, pv.b / D); Object.assign(rg.style, { left: `${x0 * 100}%`, width: `${Math.max(0, x1 - x0) * 100}%` }); }
+    if (pv.va) {
+      const r = scorePart(pv.va.analysis, pv.a, pv.b), ps = $('.fd-pscore', preview);
+      ps.hidden = false; ps.className = `fd-pscore ${scoreColor(r.score)}`; ps.innerHTML = `${FLAME}${r.score}<small>viral</small>`;
+      ps.title = `How likely this part is to go viral: ${r.score}/100`;
+      $('.fd-pwhy', preview).textContent = r.why.join(' · ');
+    }
+    const sm = $('.fd-smart', preview);
+    sm.classList.toggle('dim', !pv.sents.length);
+    sm.title = pv.sents.length ? 'Start at the beginning of a sentence and end where a sentence ends, close to your length'
+      : 'Needs the video’s captions: this one has none, so parts start and end exactly where you put them';
+    const rv = $('.fd-revert', preview);
+    if (rv) rv.disabled = !!isWhole && (!pv.it.edit || !editing?.changed?.()) && (!pv.video || pv.video.playbackRate === 1);
+    drawFine();
+  }
+  // ---- fine trim: a close-up bar around the part (the part plus some time on each side) for exact edges ----
+  // It stays where it is (so the part doesn't jump around under your mouse) while the part fits in it nicely;
+  // only a part that left it, or got much shorter / longer, gets a new close-up centred on it.
+  function fineWindow() {
+    if (pv.fineLock) return pv.fineLock; // (while you drag in it: fixed, it only scrolls at its ends)
+    const D = pv.dur || pv.it.duration || Math.max(pv.b, 1), L = pv.b - pv.a, w = pv.fineWin;
+    if (w && w[1] <= D + 0.01 && pv.a >= w[0] - 0.01 && pv.b <= w[1] + 0.01 && L >= (w[1] - w[0]) * 0.15 && L <= (w[1] - w[0]) * 0.82) return w;
+    const W = Math.min(D, Math.max(6, L * 2.2)), c = (pv.a + pv.b) / 2;
+    const w0 = Math.max(0, Math.min(D - W, c - W / 2));
+    return (pv.fineWin = [w0, w0 + W]);
+  }
+  function drawFine() {
+    const box = $('.fd-fine', preview); if (!box || !pv) return;
+    const [w0, w1] = fineWindow(), W = Math.max(1e-6, w1 - w0), pc = (t) => `${((t - w0) / W) * 100}%`;
+    $('.fd-fine-t0', preview).textContent = fmtT(w0); $('.fd-fine-t1', preview).textContent = fmtT(w1);
+    // (the part is drawn only inside the bar: a side past the bar's end shows as an open end, no handle)
+    const part = $('.fd-fine-part', preview), l = Math.max(0, (pv.a - w0) / W), r = Math.min(1, (pv.b - w0) / W);
+    part.hidden = r <= 0 || l >= 1;
+    part.style.left = `${l * 100}%`; part.style.width = `${Math.max(0, r - l) * 100}%`;
+    part.classList.toggle('open-l', pv.a < w0 - 0.01); part.classList.toggle('open-r', pv.b > w1 + 0.01);
+    $('.fd-fine-len', preview).textContent = `${(pv.b - pv.a).toFixed(1)}s`;
+    const key = `${w0.toFixed(2)}|${w1.toFixed(2)}|${pv.va ? 1 : 0}|${pv.sents.length}|${pv.scan?.cuts?.length || 0}`;
+    if (box.dataset.key === key) return;
+    box.dataset.key = key;
+    // what's around the part: how viral each moment is (heat), where lines start (white ticks), shot changes (blue)
+    const cv = $('.fd-fine-heat', preview), A = pv.va;
+    const w = cv.clientWidth || 500, dpr = devicePixelRatio || 1; cv.width = Math.round(w * dpr); cv.height = Math.round(22 * dpr);
+    const g = cv.getContext('2d'); g.clearRect(0, 0, cv.width, cv.height);
+    if (A?.curve?.length) {
+      for (let x = 0; x < cv.width; x++) {
+        const t = w0 + (x / cv.width) * W, v = A.curve[Math.min(A.curve.length - 1, Math.max(0, Math.floor(t / A.step)))] || 0;
+        g.fillStyle = v > 0.7 ? `rgba(255,77,77,${0.25 + v * 0.35})` : v > 0.5 ? `rgba(255,150,60,${0.18 + v * 0.3})` : v > 0.32 ? `rgba(255,214,90,${0.1 + v * 0.25})` : `rgba(255,255,255,${0.03 + v * 0.08})`;
+        const hgt = Math.max(2, v * cv.height); g.fillRect(x, cv.height - hgt, 1, hgt);
+      }
+    }
+    const ticks = [];
+    for (const s of pv.sents) if (s.start >= w0 && s.start <= w1) ticks.push(`<i class="ln" style="left:${pc(s.start)}" title="A line starts: “${esc(s.text.slice(0, 60))}”"></i>`);
+    for (const c of pv.scan?.cuts || []) if (c >= w0 && c <= w1) ticks.push(`<i class="cut" style="left:${pc(c)}" title="Shot change at ${fmtT(c)}"></i>`);
+    $('.fd-fine-ticks', preview).innerHTML = ticks.join('');
+  }
+  function fineHead() {
+    const h = $('.fd-fine-head', preview); if (!h || !pv?.video) return;
+    const [w0, w1] = fineWindow(), t = pv.video.currentTime || 0;
+    h.hidden = t < w0 || t > w1; h.style.left = `${((t - w0) / Math.max(1e-6, w1 - w0)) * 100}%`;
+  }
+  function bindPreview() {
+    const it = pv.it;
+    $('.fd-pv-x', preview).onclick = () => closePreview(true);
+    preview.onclick = (e) => { if (e.target === preview) closePreview(true); };
+    const add = $('.fd-pv-add', preview); if (add) add.onclick = () => { if (it.edit) { const D = pv.dur || it.duration || 0; pv.a = 0; pv.b = D; pv.len = D; editing?.setPart(0, D); drawPart(); return; } if (it.file) return fileAdd(it, null); addOne(it); closePreview(); };
+    const v = () => pv?.video;
+    const toggle = () => { const el = v(); if (!el) return; if (el.paused) el.play().catch(() => {}); else el.pause(); };
+    $('.fd-c-play', preview).onclick = toggle;
+    $('.fd-bigplay', preview).onclick = () => { $('.fd-bigplay', preview).hidden = true; v()?.play().catch(() => {}); };
+    $('.fd-pv-video', preview).addEventListener('click', (e) => { if (e.target.matches('video')) toggle(); });
+    $('.fd-c-back', preview).onclick = () => { if (v()) v().currentTime = Math.max(0, v().currentTime - 5); };
+    $('.fd-c-fwd', preview).onclick = () => { if (v()) v().currentTime = v().currentTime + 5; };
+    $('.fd-c-rate', preview).onchange = (e) => { if (v()) v().playbackRate = Number(e.target.value); drawPart(); };
+    const vol = $('.fd-c-vol', preview);
+    vol.oninput = () => { if (!v()) return; v().volume = Number(vol.value); v().muted = false; try { localStorage.setItem('cutsona.pvVol', vol.value); } catch {} };
+    $('.fd-c-mute', preview).onclick = () => { if (v()) v().muted = !v().muted; };
+    // scrubber: click or drag to move; the time under the pointer shows above it
+    const sc = $('.fd-scrub', preview), tip = $('.fd-s-tip', preview);
+    const tAt = (e) => { const r = sc.getBoundingClientRect(), D = pv.dur || it.duration || 0; return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * D; };
+    let dragging = false;
+    sc.addEventListener('pointerdown', (e) => { dragging = true; sc.setPointerCapture(e.pointerId); if (v()) v().currentTime = tAt(e); });
+    sc.addEventListener('pointermove', (e) => {
+      const t = tAt(e), r = sc.getBoundingClientRect();
+      tip.hidden = false; tip.textContent = fmtT(t); tip.style.left = `${e.clientX - r.left}px`;
+      if (dragging && !(e.buttons & 1)) dragging = false; // the button was let go somewhere we didn't hear about
+      if (dragging && v()) v().currentTime = t;
+    });
+    sc.addEventListener('pointerleave', () => { tip.hidden = true; });
+    const stop = () => { dragging = false; };
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) sc.addEventListener(ev, stop);
+    window.addEventListener('pointerup', stop);
+    if (preview.querySelector('.fd-part')) {
+      $('.fd-m-in', preview).onclick = () => setStart(v() ? v().currentTime : pv.a);
+      $('.fd-m-out', preview).onclick = () => setEnd(v() ? v().currentTime : pv.b);
+      const lenIn = $('.fd-len', preview);
+      lenIn.addEventListener('change', () => { const L = Number(lenIn.value); if (L > 0) { pv.touched = true; pv.pick = L; fitPart(L); drawPart(); } });
+      lenIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') lenIn.blur(); });
+      const lens = $('.fd-lens', preview);
+      lens.addEventListener('click', (e) => {
+        const rm = e.target.closest('[data-rmlen]');
+        if (rm) { e.stopPropagation(); if (KEEP_LENS.includes(Number(rm.dataset.rmlen))) return; partLens = partLens.filter((x) => String(x) !== rm.dataset.rmlen); saveLens(); drawPart(); return; }
+        if (e.target.closest('.fd-savelen')) {
+          const L = +(pv.b - pv.a).toFixed(1);
+          if (!partLens.some((x) => Math.abs(x - L) < 0.05)) { partLens = [...partLens, L].sort((x, y) => x - y).slice(-12); saveLens(); toast(`${lenName(L)} saved as a length button`); }
+          drawPart(); return;
+        }
+        const b = e.target.closest('[data-len]'); if (!b) return;
+        pv.touched = true;
+        if (b.dataset.len === 'whole') { const D = pv.dur || it.duration || 0; pv.a = 0; pv.b = D; pv.len = D; pv.pick = 'whole'; drawPart(); return; }
+        pv.pick = Number(b.dataset.len);
+        fitPart(pv.pick);
+        if (pv.video && (pv.video.currentTime < pv.a || pv.video.currentTime > pv.b)) pv.video.currentTime = pv.a;
+        drawPart();
+      });
+      lens.addEventListener('contextmenu', (e) => {
+        const b = e.target.closest('[data-len]'); if (!b) return;
+        e.preventDefault(); if (KEEP_LENS.includes(Number(b.dataset.len))) return; partLens = partLens.filter((x) => String(x) !== b.dataset.len); saveLens(); drawPart();
+      });
+      // Smart trim: the most viral part of the length you picked; again: the next best one
+      $('.fd-smarttrim', preview).onclick = () => {
+        if (!pv.va) { toast(pv.scanErr ? `Smart trim needs the viral scan: ${pv.scanErr}` : 'Still watching the video: Smart trim is ready in a moment'); return; }
+        // (the part is the whole video: trim it to the best length for this video, else 15 s)
+        const Dw = pv.dur || it.duration || 0, L0 = Math.max(3, typeof pv.pick === 'number' ? pv.pick : pv.len || 15), L = Dw && L0 >= Dw - 0.5 ? pv.bestLen || Math.min(15, Dw * 0.5) : L0;
+        const list = viralMoments(pv.scan, { lengths: [L], max: 5, analysis: pv.va.analysis });
+        if (!list.length) { toast('Nothing that long in this video'); return; }
+        const again = pv.trimL === L;
+        pv.trimK = again ? (pv.trimK + 1) % list.length : 0; pv.trimL = L;
+        if (again && list.length === 1) { toast(`That's the only ${lenName(L)} part that stands out in this video: try another length`); return; }
+        const m = list[pv.trimK];
+        pv.touched = true; pv.a = m.start; pv.b = m.end; pv.len = m.end - m.start; pv.pick = L;
+        if (pv.video) { pv.video.currentTime = m.start; pv.video.play().catch(() => {}); }
+        drawPart();
+        toast(`Smart trim${list.length > 1 ? ` (${pv.trimK + 1} of ${list.length})` : ''}: ${fmtT(m.start)}–${fmtT(m.end)}, viral ${m.score}. ${m.why[0] || ''}`);
+      };
+      // drag the part's edges right on the bar: cut the video from here
+      for (const h of preview.querySelectorAll('.fd-h')) {
+        h.addEventListener('pointerdown', (e) => {
+          e.stopPropagation(); e.preventDefault(); h.setPointerCapture(e.pointerId);
+          const sc = $('.fd-scrub', preview), D = pv.dur || it.duration || 0, isA = h.classList.contains('a');
+          const mv = (ev) => {
+            const r = sc.getBoundingClientRect(), t = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * D;
+            if (isA) pv.a = Math.max(0, Math.min(pv.b - 0.5, t)); else pv.b = Math.min(D, Math.max(pv.a + 0.5, t));
+            pv.len = pv.b - pv.a;
+            if (pv.video) pv.video.currentTime = isA ? pv.a : Math.max(pv.a, pv.b - 1.5);
+            drawPart();
+          };
+          const up = () => {
+            h.removeEventListener('pointermove', mv); h.removeEventListener('pointerup', up);
+            pv.touched = true;
+            if (!pv.sents.length) { if (isA) pv.a = Math.min(pv.b - 0.5, snapCut(pv.a)); else pv.b = Math.max(pv.a + 0.5, snapCut(pv.b)); pv.len = pv.b - pv.a; drawPart(); }
+            // smart edges: the start on a sentence's start, the end after the word being said
+            if (pv.smart && pv.sents.length) { if (isA) { const a2 = smartStart(pv.sents, pv.a); if (a2 < pv.b - 0.5 && Math.abs(a2 - pv.a) < 3) pv.a = a2; } else setEnd(pv.b); pv.len = pv.b - pv.a; drawPart(); }
+            pv.pick = null;
+          };
+          h.addEventListener('pointermove', mv); h.addEventListener('pointerup', up);
+        });
+      }
+      // drag the part itself: slide the whole cut along the video, same length (a plain click still seeks)
+      const rgEl = $('.fd-s-range', preview);
+      rgEl.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('.fd-h') || e.button !== 0) return;
+        e.stopPropagation(); e.preventDefault(); rgEl.setPointerCapture(e.pointerId);
+        const sc = $('.fd-scrub', preview), D = pv.dur || it.duration || 0, r = sc.getBoundingClientRect();
+        const x0 = e.clientX, a0 = pv.a, L = pv.b - pv.a;
+        let moved = false;
+        const mv = (ev) => {
+          if (!moved && Math.abs(ev.clientX - x0) < 4) return;
+          moved = true; rgEl.classList.add('moving');
+          const dt = ((ev.clientX - x0) / r.width) * D;
+          pv.a = Math.max(0, Math.min(D - L, a0 + dt)); pv.b = pv.a + L;
+          if (pv.video) pv.video.currentTime = pv.a;
+          drawPart();
+        };
+        const up = (ev) => {
+          rgEl.removeEventListener('pointermove', mv); rgEl.removeEventListener('pointerup', up); rgEl.removeEventListener('pointercancel', up);
+          rgEl.classList.remove('moving');
+          if (!moved) { if (pv.video && D) pv.video.currentTime = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * D; return; }
+          pv.touched = true;
+          // land on a sentence start when Smart edges is on, else on a scene cut close by
+          if (pv.smart && pv.sents.length) { pv.a = smartStart(pv.sents, pv.a); pv.b = Math.min(D, pv.a + L); }
+          else if (!pv.sents.length) { pv.a = Math.max(0, Math.min(D - L, snapCut(pv.a))); pv.b = pv.a + L; }
+          pv.len = pv.b - pv.a;
+          if (pv.video) { pv.video.currentTime = pv.a; pv.video.play().catch(() => {}); }
+          drawPart();
+        };
+        rgEl.addEventListener('pointermove', mv); rgEl.addEventListener('pointerup', up); rgEl.addEventListener('pointercancel', up);
+      });
+      // fine trim: exact edges (no snapping), drag the part, click to move the playhead
+      const fb = $('.fd-fine-bar', preview);
+      const fineT = (x) => { const r = fb.getBoundingClientRect(), [w0, w1] = fineWindow(); return w0 + Math.max(0, Math.min(1, (x - r.left) / r.width)) * (w1 - w0); };
+      fb.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault(); fb.setPointerCapture(e.pointerId);
+        const D = pv.dur || it.duration || Infinity, h = e.target.closest('.fd-fh'), onPart = e.target.closest('.fd-fine-part');
+        const kind = h ? (h.classList.contains('a') ? 'a' : 'b') : onPart ? 'move' : 'seek';
+        pv.fineLock = [...fineWindow()];
+        const t0 = fineT(e.clientX), a0 = pv.a, b0 = pv.b, x0 = e.clientX;
+        let moved = false, lastX = e.clientX, scrollT = 0;
+        // holding the mouse at (or past) an end of the bar scrolls the close-up that way, so the part can keep going
+        const edgeScroll = () => {
+          if (scrollT === -1) return;
+          const r = fb.getBoundingClientRect(), dir = lastX < r.left + 14 ? -1 : lastX > r.right - 14 ? 1 : 0;
+          if (!dir || kind === 'seek') { scrollT = 0; return; }
+          const [w0, w1] = pv.fineLock, W = w1 - w0, step = W * 0.035;
+          const n0 = Math.max(0, Math.min(D - W, w0 + dir * step));
+          if (Math.abs(n0 - w0) < 1e-4) { scrollT = 0; return; }
+          pv.fineLock = [n0, n0 + W];
+          pv.fineWin = pv.fineLock;
+          mv({ clientX: lastX }, true);
+          scrollT = setTimeout(edgeScroll, 30);
+        };
+        if (kind === 'seek' && pv.video) pv.video.currentTime = t0;
+        fb.classList.add('dragging');
+        const mv = (ev, fromScroll) => {
+          if (!moved && Math.abs(ev.clientX - x0) < 3) return;
+          moved = true; lastX = ev.clientX;
+          if (!fromScroll && !scrollT) scrollT = setTimeout(edgeScroll, 60);
+          const t = fineT(ev.clientX), d = t - t0;
+          if (kind === 'a') { pv.a = Math.max(0, Math.min(b0 - 0.3, a0 + d)); if (pv.video) pv.video.currentTime = pv.a; }
+          else if (kind === 'b') { pv.b = Math.min(D, Math.max(a0 + 0.3, b0 + d)); if (pv.video) pv.video.currentTime = Math.max(pv.a, pv.b - 1); }
+          else if (kind === 'move') { const L = b0 - a0; pv.a = Math.max(0, Math.min(D - L, a0 + d)); pv.b = pv.a + L; if (pv.video) pv.video.currentTime = pv.a; }
+          else if (pv.video) pv.video.currentTime = t;
+          if (kind !== 'seek') { pv.touched = true; pv.len = pv.b - pv.a; if (kind !== 'move') pv.pick = null; drawPart(); }
+          fineHead();
+        };
+        const up = () => {
+          fb.removeEventListener('pointermove', mv); fb.removeEventListener('pointerup', up); fb.removeEventListener('pointercancel', up);
+          fb.classList.remove('dragging'); clearTimeout(scrollT); scrollT = -1;
+          pv.fineWin = pv.fineLock; pv.fineLock = null;
+          if (kind === 'move' && !moved && pv.video) pv.video.currentTime = t0; // a click on the part: play from there
+          if (moved && kind !== 'seek' && pv.video) pv.video.play().catch(() => {});
+          drawPart();
+        };
+        fb.addEventListener('pointermove', mv); fb.addEventListener('pointerup', up); fb.addEventListener('pointercancel', up);
+      });
+      $('.fd-revert', preview).onclick = () => {
+        const D = pv.dur || it.duration || 0; if (!D) return;
+        pv.touched = true; pv.a = 0; pv.b = D; pv.len = D; pv.pick = 'whole'; pv.fineWin = null; pv.trimL = null;
+        if (pv.video) { pv.video.playbackRate = 1; const rate = $('.fd-c-rate', preview); if (rate) rate.value = '1'; pv.video.currentTime = 0; }
+        if (it.edit) editing?.revert?.();
+        drawPart();
+        toast(it.edit ? 'Back to the original: the whole clip, nothing cut out, normal sound' : 'Back to the original: the whole video');
+      };
+      $('.fd-fine-play', preview).onclick = () => { if (!pv.video) return; pv.video.currentTime = pv.a; pv.video.play().catch(() => {}); };
+      const lp = $('.fd-loop input', preview);
+      lp.checked = pv.loop !== false; lp.onchange = () => { pv.loop = lp.checked; };
+      const sm = $('.fd-smart input', preview);
+      sm.onchange = () => { pv.smart = sm.checked; if (pv.smart) { applySmart(); } fitPart(pv.len); drawPart(); };
+      $('.fd-pv-addpart', preview).onclick = () => {
+        const a = +pv.a.toFixed(2), b = +pv.b.toFixed(2);
+        if (it.edit) { editing?.setPart(a, b); drawPart(); return; }
+        if (it.file) return fileAdd(it, { start: a, end: b });
+        pv.jobKey = jobKey(it) + '@' + a; pv.ja = a; pv.jb = b;
+        addOne({ ...it, moment: false, title: `${it.title} @${fmtDur(a)}` }, { start: a, end: b });
+        if (!pickSession) toast(`Grabbing ${fmtT(a)}–${fmtT(b)}: it goes into your clip list`);
+        drawPart();
+      };
+    }
+    const q = $('.fd-ps-q', preview);
+    if (q) {
+      q.addEventListener('input', () => { pv.q = q.value; renderHits(); });
+      q.addEventListener('keydown', (e) => { if (e.key === 'Enter' && pv.hits[0]) jumpTo(pv.hits[0].s, true); });
+      $('.fd-ps-list', preview).addEventListener('click', (e) => {
+        const b = e.target.closest('.fd-line'); if (!b) return;
+        const s = pv.sents.find((x) => x.start === Number(b.dataset.t));
+        if (s) jumpTo(s, !!e.target.closest('[data-use]'));
+      });
+    }
+    // live: the play button, the time, the playhead, the line being said
+    clearInterval(pvTick);
+    let lastLine = -1;
+    pvTick = setInterval(() => {
+      const el = v();
+      if (!el || preview.hidden) { clearInterval(pvTick); return; }
+      const D = pv.dur || it.duration || 0, t = el.currentTime || 0;
+      $('.fd-c-time', preview).textContent = fmtT(t);
+      $('.fd-c-play', preview).innerHTML = el.paused ? '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>' : '<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+      $('.fd-c-mute', preview).classList.toggle('off', el.muted || el.volume === 0);
+      if (D) {
+        const pc = (x) => `${Math.min(100, Math.max(0, (x / D) * 100))}%`; // (never past the end of the bar)
+        $('.fd-s-played', preview).style.width = pc(t);
+        $('.fd-s-head', preview).style.left = pc(t);
+        try { const bf = el.buffered; if (bf.length) $('.fd-s-buf', preview).style.width = pc(bf.end(bf.length - 1)); } catch {}
+      }
+      if (pv.jobKey) drawPart();
+      fineHead();
+      // Loop part: playing across the part's end starts it over (seeking past it on purpose doesn't)
+      // (only when it played inside the part up to its end: jumping past the end on purpose doesn't)
+      const inPart = t >= pv.a - 0.05 && t < pv.b;
+      if (pv.loop !== false && pv.wasIn && !el.paused && preview.querySelector('.fd-part') && t >= pv.b && t < pv.b + 0.6 && pv.b - pv.a >= 0.5) { el.currentTime = pv.a; pv.wasIn = true; }
+      else pv.wasIn = inPart;
+      // follow along in the transcript (when not searching)
+      if (pv.sents.length && !pv.q.trim()) {
+        const k = pv.sents.findIndex((s) => t >= s.start && t < s.end + 0.3);
+        if (k !== lastLine) {
+          lastLine = k;
+          const list = $('.fd-ps-list', preview);
+          list?.querySelectorAll('.fd-line.now').forEach((x) => x.classList.remove('now'));
+          const row = k >= 0 ? list?.children[k] : null;
+          if (row) { row.classList.add('now'); if (!list.matches(':hover')) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+        }
+      }
+    }, 120);
+  }
+  // a line from the transcript: play from it; "Use" makes it (and the lines after it, up to your length) the part
+  function jumpTo(s, use) {
+    if (!pv) return;
+    if (pv.video) { pv.video.currentTime = Math.max(0, s.start - 0.3); pv.video.play().catch(() => {}); }
+    if (use && preview.querySelector('.fd-part')) {
+      pv.touched = true;
+      const D = pv.dur || pv.it.duration || Infinity;
+      pv.a = Math.max(0, s.start - 0.15);
+      pv.b = Math.min(D, pv.smart ? Math.max(s.end + 0.25, smartEnd(pv.sents, pv.a, pv.len)) : Math.max(s.end + 0.25, pv.a + pv.len));
+      pv.len = pv.b - pv.a; pv.pick = null;
+      drawPart();
+    }
+  }
+  // keys inside the preview: Space play / pause, I / O start / end, ← → 5 seconds, M sound, Enter adds the part
+  window.addEventListener('keydown', (e) => {
+    if (root.hidden || preview.hidden || !pv?.video) return;
+    if (e.target.matches?.('input[type=text], input[type=number], textarea, select')) return;
+    const v = pv.video, k = e.key.toLowerCase();
+    if (e.code === 'Space') { e.preventDefault(); if (v.paused) v.play().catch(() => {}); else v.pause(); }
+    else if (k === 'i' && preview.querySelector('.fd-part')) setStart(v.currentTime);
+    else if (k === 'o' && preview.querySelector('.fd-part')) setEnd(v.currentTime);
+    else if (k === 'm') v.muted = !v.muted;
+    else if (k === 'p' && preview.querySelector('.fd-part')) { v.currentTime = pv.a; v.play().catch(() => {}); }
+    else if (e.key === 'ArrowLeft') v.currentTime = Math.max(0, v.currentTime - 5);
+    else if (e.key === 'ArrowRight') v.currentTime += 5;
+    else if (e.key === 'Enter' && preview.querySelector('.fd-part')) $('.fd-pv-addpart', preview).click();
+    else return;
+    e.stopPropagation();
+  }, true);
   // ---- hover a result's picture: a small muted preview plays right there ----
   function hoverEmbed(it) {
     // Twitch and Kick clips play as plain muted video, through Cutsona (their embeds won't autoplay muted)
@@ -837,7 +1542,8 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     const host = encodeURIComponent(location.hostname);
     const start = it.moment ? Math.floor(it.start) : it.duration ? Math.floor(Math.min(it.duration * 0.3, Math.max(0, it.duration - 8))) : 0;
     const end = it.moment ? `&end=${Math.ceil(it.end) + 1}` : '';
-    // YouTube: drawn big and scaled down (its title bar and logo end up outside the picture), shown once it plays
+    // YouTube: its player at first (drawn big and scaled down, shown only once it really plays), then Cutsona's own
+    // copy of those seconds as soon as it's fetched (no YouTube play / pause icons at all), see below
     if (it.source === 'youtube' && it.id) return `<iframe class="yt" referrerpolicy="strict-origin-when-cross-origin" src="https://www.youtube.com/embed/${encodeURIComponent(it.id)}?autoplay=1&mute=1&controls=0&disablekb=1&fs=0&iv_load_policy=3&modestbranding=1&playsinline=1&rel=0&enablejsapi=1&origin=${encodeURIComponent(location.origin)}&start=${start}${end}" allow="autoplay; encrypted-media" tabindex="-1"></iframe>`;
     if (it.source === 'twitch') {
       const slug = (/clip\/([^/?#]+)/.exec(it.url) || /clips\.twitch\.tv\/([^/?#]+)/.exec(it.url) || [])[1];
@@ -879,9 +1585,19 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
           if (d?.info?.playerState === 1 || d?.event === 'onStateChange' && d.info === 1) { show(); window.removeEventListener('message', onMsg); }
         };
         window.addEventListener('message', onMsg);
-        setTimeout(() => { window.removeEventListener('message', onMsg); show(); }, 3500);
+        setTimeout(() => window.removeEventListener('message', onMsg), 8000);
+        // Cutsona's own copy of these seconds (cached, so the next hover is instant): it takes over when it plays
+        if (it.source === 'youtube') {
+          const st0 = it.moment ? Math.floor(it.start) : it.duration ? Math.floor(Math.min(it.duration * 0.3, Math.max(0, it.duration - 8))) : 0;
+          const own = document.createElement('video');
+          own.muted = true; own.loop = true; own.playsInline = true; own.autoplay = true; own.className = 'own';
+          own.src = `/api/finder/hoverclip?url=${encodeURIComponent(it.url.replace(/&t=\d+s?/, ''))}&start=${st0}&len=${it.moment ? Math.max(2, Math.ceil(it.end - it.start) + 1) : 6}`;
+          own.addEventListener('playing', () => { if (!div.isConnected) return; fr.remove(); own.classList.add('on'); show(); }, { once: true });
+          own.addEventListener('error', () => own.remove(), { once: true });
+          div.appendChild(own);
+        }
       } else show();
-    }, 450);
+    }, 350);
   });
   results.addEventListener('mouseout', (e) => {
     if (!hoverCard) return;
@@ -890,13 +1606,222 @@ export function initFinder({ grab, grabSong, toast, hasClip = () => true }) {
     stopHover();
   });
 
+  // ---------- the viral scan of the video in the preview ----------
+  const FLAME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c1 3.5 5 6 5 11a5 5 0 0 1-10 0c0-2.2 1-3.8 2.3-5 .2 1.6 1 2.7 2.2 3.2C11 8 12.3 5.2 12 2z"/></svg>';
+  const scans = new Map(); // finished scans, so a preview opened again is instant
+  async function startScan(it) {
+    const id = it.edit ? `e:${it.edit}` : it.file ? `f:${it.file.name}:${it.file.size}:${it.file.lastModified}` : `u:${pageOf(it)}`;
+    const st0 = () => $('.fd-vr-st', preview);
+    try {
+      let j = scans.get(id);
+      if (!j) {
+        let r;
+        if (it.edit && it.cache) r = await fetch('/api/viral?cache=' + encodeURIComponent(it.cache));
+        else if (it.file) {
+          const path = window.cutsonaDesktop?.pathOf ? window.cutsonaDesktop.pathOf(it.file) : '';
+          r = path ? await fetch('/api/viral?path=' + encodeURIComponent(path))
+            : await fetch(`/api/viral?name=${encodeURIComponent(it.file.name)}&size=${it.file.size}&mtime=${it.file.lastModified || 0}`, { method: 'POST', body: it.file });
+        } else r = await fetch('/api/viral?url=' + encodeURIComponent(it.source === 'twitch' || it.source === 'kick' ? it.url : pageOf(it)));
+        j = await r.json();
+        while (j.running) {
+          if (!pv || pv.it !== it) return;
+          const s = st0(); if (s) s.innerHTML = `<i class="spin"></i>${esc(j.phase || 'Watching')}… ${j.pct ? `${j.pct}%` : ''}`;
+          await new Promise((res) => setTimeout(res, 800));
+          j = await (await fetch('/api/viral?key=' + j.key)).json();
+        }
+        if (j.error) throw new Error(j.error);
+        scans.set(id, j);
+      }
+      if (!pv || pv.it !== it) return;
+      it.scan = j;
+      // a file has no captions: the words the scan heard are its transcript
+      if (!pv.sents.length && j.words?.length) { pv.words = j.words; pv.sents = sentencesOf(j.words); pv.from = j.wordsFrom; $('.fd-ps-q', preview) && ($('.fd-ps-q', preview).disabled = false); }
+      pv.scan = { ...j, words: pv.words?.length ? pv.words : j.words || [] };
+      pv.va = analyzeViral(pv.scan, { lengths: [...new Set([15, 30, 45, 60, Math.round(pv.len || 15)])] });
+      // how viral the best part of every length button is, and which length is best for this video
+      const D = pv.dur || j.duration || it.duration || 0;
+      pv.lenBest = {}; let bestS = -1;
+      for (const L of partLens) {
+        if (D && L >= D - 0.5) continue;
+        const m = viralMoments(pv.scan, { lengths: [L], max: 1, analysis: pv.va.analysis })[0];
+        if (m) { pv.lenBest[L] = m; if (m.score > bestS + 1 || (Math.abs(m.score - bestS) <= 1 && L >= 7 && L <= 35)) { bestS = Math.max(bestS, m.score); pv.bestLen = L; } }
+      }
+      if (D) pv.wholeScore = scorePart(pv.va.analysis, 0, D).score;
+      // nothing picked yet: start on the most viral part of the chosen length (a clip that came as a moment keeps it)
+      if (!pv.touched && !it.moment && preview.querySelector('.fd-part')) {
+        const L = Math.round(pv.len || 15), m = pv.lenBest[L] || viralMoments(pv.scan, { lengths: [L], max: 1, analysis: pv.va.analysis })[0];
+        if (m && (!D || m.end - m.start < D - 0.5)) {
+          pv.a = m.start; pv.b = m.end; pv.len = m.end - m.start; pv.trimL = L; pv.trimK = 0; pv.pick = L;
+          if (pv.video && pv.video.currentTime < 0.5) { pv.video.currentTime = m.start; }
+          toast(`Picked the most viral ${lenName(L)} part (${fmtT(m.start)}–${fmtT(m.end)}, viral ${m.score}). Smart trim: the next best; or pick your own`);
+        }
+      }
+      renderViral(); renderHits(); drawPart();
+      if (it.file && !pv.sents.length) $('.fd-ps-list', preview).innerHTML = `<div class="fd-empty small fd-nowords"><span>${j.wordsFrom === 'none' ? 'No words heard. To read what’s said, set up the speech tools in Settings → Captions and speech.' : 'Nobody speaks in this video.'}</span><small>The viral moments use what happens in the picture and the sound.</small></div>`;
+    } catch (e) {
+      if (!pv || pv.it !== it) return;
+      pv.scanErr = e.message;
+      const s = st0(); if (s) s.innerHTML = `<span class="err">Couldn’t watch it: ${esc(e.message)}</span>`;
+      if (it.file && !pv.sents.length) $('.fd-ps-list', preview).innerHTML = '<div class="fd-empty small">No transcript for this file.</div>';
+    }
+  }
+  function renderViral() {
+    if (!pv?.va) return;
+    const A = pv.va, D = pv.dur || pv.scan.duration || pv.it.duration || 0;
+    const st = $('.fd-vr-st', preview);
+    if (st) st.innerHTML = `<span class="vscore ${scoreColor(A.score)}" title="How likely this video is to have a viral part: ${A.score}/100">${FLAME}${A.score}</span>${A.moments.length} found`;
+    const list = $('.fd-vr-list', preview);
+    if (list) list.innerHTML = A.moments.length ? A.moments.map((m, k) => `<div class="fd-vm" data-a="${m.start}" data-b="${m.end}" role="button" tabindex="0">
+        <span class="vs ${scoreColor(m.score)}">${m.score}</span>
+        <span class="vbody"><span class="vt">#${k + 1} · ${fmtT(m.start)}–${fmtT(m.end)} · ${Math.round(m.end - m.start)}s</span>
+          ${m.hookText || m.text ? `<span class="vq">“${esc((m.hookText || m.text).slice(0, 90))}${(m.hookText || m.text).length > 90 ? '…' : ''}”</span>` : ''}
+          <span class="vw">${esc(m.why.join(' · '))}</span></span>
+        <button class="small vuse" data-vuse title="Make this the part">Use</button></div>`).join('')
+      : '<div class="fd-empty small">No part stands out: try a longer video.</div>';
+    // the bar: a heat strip (the hotter, the likelier to go viral) and the best parts marked with their rank
+    const cv = $('.fd-s-heat', preview);
+    if (cv && D) {
+      const w = cv.clientWidth || 600, dpr = devicePixelRatio || 1; cv.width = Math.round(w * dpr); cv.height = Math.round(6 * dpr);
+      const g = cv.getContext('2d'), n = A.curve.length;
+      for (let x = 0; x < cv.width; x++) {
+        const t = (x / cv.width) * D, v = A.curve[Math.min(n - 1, Math.floor(t / A.step))] || 0;
+        g.fillStyle = v > 0.7 ? `rgba(255,77,77,${0.5 + v * 0.5})` : v > 0.5 ? `rgba(255,150,60,${0.35 + v * 0.5})` : v > 0.32 ? `rgba(255,214,90,${0.2 + v * 0.4})` : `rgba(255,255,255,${0.04 + v * 0.15})`;
+        g.fillRect(x, 0, 1, cv.height);
+      }
+    }
+    const vm = $('.fd-s-vm', preview);
+    if (vm && D) vm.innerHTML = A.moments.slice(0, 5).map((m, k) => `<i class="${scoreColor(m.score)}" style="left:${(m.start / D) * 100}%;width:${((m.end - m.start) / D) * 100}%" title="#${k + 1}: viral ${m.score} (${fmtT(m.start)}–${fmtT(m.end)})"><b>${k + 1}</b></i>`).join('');
+  }
+  preview.addEventListener('click', (e) => {
+    const stab = e.target.closest('[data-stab]');
+    if (stab) {
+      const side = stab.closest('.fd-pv-side'), snd = stab.dataset.stab === 'sound';
+      side.querySelectorAll('[data-stab]').forEach((b) => b.classList.toggle('on', b === stab));
+      side.classList.toggle('show-sound', snd); side.querySelector('.fd-sound').hidden = !snd;
+      if (snd) requestAnimationFrame(() => editing?.refresh?.()); // (the fade wave needs to be on screen to be drawn)
+      return;
+    }
+    if (e.target.closest('.fd-vr-q, .fd-pscore, .vscore')) { explainViral?.(e); return; }
+    const card = e.target.closest('.fd-vm'); if (!card || !pv) return;
+    const a = Number(card.dataset.a), b = Number(card.dataset.b);
+    if (pv.video) { pv.video.currentTime = a; pv.video.play().catch(() => {}); }
+    if (e.target.closest('[data-vuse]') && preview.querySelector('.fd-part')) { pv.touched = true; pv.a = a; pv.b = b; pv.len = b - a; pv.pick = null; drawPart(); toast(`The part is ${fmtT(a)}–${fmtT(b)}: + Add it, or drag its edges on the bar`); }
+  });
+
+  // ---------- your own videos: a preview tab for each before it's added (viral scan, smart trim) ----------
+  let fileTabs = [], fileTab = 0, fileDone = null, openedForFiles = false;
+  const tabsHtml = () => `<div class="fd-ftabs" role="tablist">${fileTabs.map((t, k) => `<button role="tab" class="fd-ftab${k === fileTab ? ' on' : ''}${t.added ? ' added' : ''}" data-ftab="${k}" title="${esc(t.it.title)}">${t.added ? '✓ ' : ''}${esc(t.it.title.replace(/\.[a-z0-9]{2,4}$/i, ''))}${t.added && t.part ? ` <small>${fmtT(t.part.start)}–${fmtT(t.part.end)}</small>` : ''}</button>`).join('')}
+    <span class="fd-ftabs-sp"></span><button class="small fd-ftabs-all" title="Add every video not added yet, whole">Add all${fileTabs.some((t) => t.added) ? ' the rest' : ''} (${fileTabs.filter((t) => !t.added).length})</button></div>`;
+  function previewFiles(files, done) {
+    const vids = files.filter((f) => /^video\//.test(f.type) || /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mpg|mpeg|ts|mts|3gp|ogv)$/i.test(f.name));
+    if (!vids.length) return false;
+    fileTabs = vids.map((f) => ({ f, it: { title: f.name, file: f, direct: true, url: URL.createObjectURL(f), source: 'file', duration: 0 }, added: false, part: null }));
+    fileTab = 0; fileDone = done;
+    openedForFiles = root.hidden; root.hidden = false;
+    openPreview(fileTabs[0].it);
+    return true;
+  }
+  function fileAdd(it, part) {
+    const k = fileTabs.findIndex((t) => t.it === it); if (k < 0) return;
+    const t = fileTabs[k]; t.added = true; t.part = part;
+    addFile?.(t.f, part, it.scan || null);
+    toast(`${t.f.name}: added${part ? ` (${fmtT(part.start)}–${fmtT(part.end)})` : ''}`);
+    const next = fileTabs.findIndex((x) => !x.added);
+    if (next < 0) return finishFiles();
+    fileTab = next; openPreview(fileTabs[next].it);
+  }
+  function finishFiles() {
+    const left = fileTabs.filter((t) => !t.added);
+    for (const t of left) addFile?.(t.f, null, t.it.scan || null);
+    for (const t of fileTabs) URL.revokeObjectURL(t.it.url);
+    fileTabs = []; const done = fileDone; fileDone = null;
+    closePreview();
+    if (openedForFiles) { openedForFiles = false; close(); }
+    done?.();
+  }
+  preview.addEventListener('click', (e) => {
+    const tb = e.target.closest('[data-ftab]');
+    if (tb) { const k = Number(tb.dataset.ftab); if (k !== fileTab && fileTabs[k]) { fileTab = k; openPreview(fileTabs[k].it); } return; }
+    if (e.target.closest('.fd-ftabs-all')) finishFiles();
+  });
+
   let pvTick = 0;
-  function closePreview() {
+  function closePreview(byYou = false, keepEdit = false) {
+    if (editing && !keepEdit) {
+      const e = editing; editing = null; e.close?.();
+      if (byYou && openedForEdit) { openedForEdit = false; root.hidden = true; }
+    }
+    // closing the preview of your own videos: the ones not added yet aren't added
+    if (byYou && fileTabs.length) {
+      const left = fileTabs.filter((t) => !t.added).length;
+      for (const t of fileTabs) URL.revokeObjectURL(t.it.url);
+      fileTabs = []; fileDone = null;
+      if (left) toast(`${left} video${left === 1 ? '' : 's'} not added`);
+      if (openedForFiles) { openedForFiles = false; root.hidden = true; }
+    }
     clearInterval(pvTick);
-    if (ytPlayer && ytPlayer.destroy) { try { ytPlayer.destroy(); } catch {} }
-    ytPlayer = null;
+    if (pv?.video) { try { pv.video.pause(); pv.video.removeAttribute('src'); pv.video.load(); } catch {} }
+    pv = null;
     preview.hidden = true; preview.innerHTML = '';
   }
 
-  return { open, close, addLink: (url) => addOne({ url }), isOpen: () => !root.hidden };
+  // a clip from the clip list, edited in the preview: which part plays (with its viral moments, Smart trim and
+  // the transcript), and its sound. opts: { setPart(a, b), part() -> [a, b], sound(host), close() }
+  function editClip(c, opts) {
+    const it = { title: c.name, edit: c.id, direct: true, url: c.previewUrl || c.url, source: 'file', duration: c.duration || 0,
+      part: opts.part(), words: c.words?.length ? c.words : c.ytWords || [], scan: c.viralScan || null,
+      cache: c.previewUrl?.startsWith('/cache/') ? c.previewUrl : c.url?.startsWith('/cache/') ? c.url : '', file: c.file && !c.url?.startsWith('/cache/') ? c.file : null,
+      page: c.origin?.url || c.origin?.page || '' };
+    if (editing) closePreview();
+    openedForEdit = root.hidden; root.hidden = false;
+    editing = { ...opts, id: c.id };
+    openPreview(it);
+  }
+  // ---------- 🎲 Random: completely random footage made into an edit ----------
+  // Edit Mode: random movies, shows, anime, Shorts, viral videos or news (and a random song if there's none).
+  // Clipper Mode: random stream clips only, from Twitch and Kick (trending, a popular channel or a game).
+  let randBusy = false;
+  async function randomEdit() {
+    if (randBusy) return; randBusy = true;
+    const btn = $('.fd-rand', root); btn.disabled = true; btn.textContent = '🎲 Rolling…';
+    const pick = (a) => a[Math.floor(Math.random() * a.length)];
+    const shuffle = (a) => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+    const get = async (o) => { const r = await fetch('/api/finder/search?' + new URLSearchParams({ n: '50', ...o }).toString()); const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || 'search failed'); return (j.items || []).filter((x) => x && x.url); };
+    const range = () => pick(['day', 'week', 'week', 'month']);
+    const stream = isStream();
+    const plans = stream ? [
+      () => ({ source: 'twitchtop', range: range(), en: '1', n: '40' }),
+      () => ({ source: 'kicktrend', range: range(), n: '40' }),
+      () => ({ source: 'twitch', channel: pick(POPULAR.twitch), range: range(), n: '40' }),
+      () => ({ source: 'kick', channel: pick(POPULAR.kick), range: range(), n: '40' }),
+      () => ({ source: 'twitchgame', q: pick(POPULAR_GAMES), range: range(), en: '1', n: '40' }),
+    ] : [
+      () => ({ source: 'youtube', q: `${pick(MOVIE_MOODS).top} movie scenes`, short: '1' }),
+      () => ({ source: 'youtube', q: `${pick(MOVIE_MOODS).top} tv show scenes`, short: '1' }),
+      () => ({ source: 'youtube', q: `${pick(MOVIE_MOODS).top} anime scenes`, short: '1' }),
+      () => ({ source: 'shorts', q: pick(['viral', 'satisfying', 'funny animals', 'street interview', 'fails', 'insane skill', 'nature', 'travel', 'skate', 'parkour']) }),
+      () => { const f = pick(VIRAL_FEEDS.filter((x) => x[2])); return { source: 'youtube', q: f[2], short: '1' }; },
+      () => ({ source: 'youtube', q: pick(NEWS_TOPICS).q, when: pick(['day', 'week', 'month']), short: '1' }),
+    ];
+    try {
+      const pool = [];
+      for (const pl of shuffle(plans).slice(0, stream ? 2 : 3)) {
+        try { pool.push(...(await get(pl())).filter((x) => !x.photo && !x.audio && (!x.duration || (x.duration >= 3 && x.duration <= (stream ? 120 : 240))))); } catch {}
+        if (pool.length > 40) break;
+      }
+      if (!pool.length) throw new Error('Nothing came up this time: roll again');
+      const picks = shuffle(pool).filter((x, i, a) => a.findIndex((y) => y.url === x.url) === i).slice(0, stream ? 1 : 3 + Math.floor(Math.random() * 3));
+      toast(stream ? `Random stream clip: ${picks[0].channel || picks[0].title || 'clip'}` : `Random edit: ${picks.length} random clips${hasMusic() ? '' : ' and a random song'}`);
+      if (!stream && !hasMusic()) {
+        try { const songsList = (await get({ source: 'ytsong', q: pick(MUSIC_MOODS).q })).filter((x) => !x.duration || (x.duration >= 60 && x.duration <= 360)); const sg = pick(songsList.slice(0, 15)); if (sg) addOne({ ...sg, audio: true }); } catch {}
+      }
+      close();
+      await Promise.allSettled(picks.map((it) => addOne(it)));
+      onRandom?.();
+    } catch (e) { toast(e.message, true); }
+    finally { randBusy = false; btn.disabled = false; btn.textContent = '🎲 Random'; }
+  }
+  // straight to a source (GIPHY reactions for "+ Own clip")
+  const openSource = (tab, msrc) => { if (msrc) { st.msrc = msrc; st.items = []; } open(tab); };
+  return { open, openSource, close, randomEdit, addLink: (url) => addOne({ url }), isOpen: () => !root.hidden, previewFiles, editClip };
 }

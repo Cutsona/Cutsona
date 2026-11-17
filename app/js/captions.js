@@ -8,6 +8,9 @@
 // options: phrase = whole sentence at once · italic · keepCase = no ALL CAPS · noHighlight · size (65 = default)
 //          y = distance from the bottom (fraction of height) · outline / shadow widths
 export const CAPTION_STYLES = {
+  quick_bold: ['Quick Bold', '#ffffff', '#ffffff', '#000000', { phrase: true, noHighlight: true }],
+  quick_yellow: ['Quick Yellow', '#ffe500', '#ffe500', '#000000', { phrase: true, noHighlight: true }],
+  quick_boxed: ['Quick Boxed', '#ffffff', '#ffffff', '#000000', { phrase: true, noHighlight: true, box: true, outline: 0 }],
   stream_word: ['Stream Word (one big word at a time)', '#ffffff', '#ffffff', '#000000',
     { word: true, noHighlight: true, size: 92, y: 0.3, outline: 6, shadow: 3, family: 'Impact, "Arial Black", sans-serif', weight: 400 }],
   glow_word: ['Glow Word (one word, green glow)', '#ffffff', '#ffffff', '#0b0b0b',
@@ -45,6 +48,7 @@ export const CAPTION_FONTS = {
   segoe: ['Segoe UI Black (Modern Viral)', '"Segoe UI Black", "Segoe UI"', 900, 0.75],
   impact: ['Impact (Viral Reel)', 'Impact', 400, 0.82],
   arial_black: ['Arial Black (Ultra Heavy)', '"Arial Black", Arial', 900, 0.71],
+  arial: ['Arial', 'Arial', 700, 0.8],
   bahnschrift: ['Bahnschrift (Geometric Tech)', 'Bahnschrift', 700, 0.83],
   trebuchet: ['Trebuchet MS Bold (Clean Creator)', '"Trebuchet MS"', 700, 0.86],
   consola: ['Consolas Bold (Developer / Code)', 'Consolas', 700, 0.85],
@@ -99,6 +103,59 @@ function keyWord(words) {
 
 const groupCache = new WeakMap(), phraseCache = new WeakMap(), wordCache = new WeakMap();
 export const captionOpts = (style) => (CAPTION_STYLES[STYLE_ALIASES[style] || style] || [])[4] || {};
+export const TOPIC_CAPTION_STYLES = { bold: 'Bold', clean: 'Clean', boxed: 'Boxed', yellow: 'Yellow' };
+export const TOPIC_CAPTION_FONTS = { default: 'Default', arial: 'Arial', georgia: 'Georgia', courier: 'Courier New' };
+
+export function drawTopicCaption(g, W, H, text, settings = {}, vertical = H > W) {
+  const clean = settings.capStyle === 'clean';
+  const size = H * (vertical ? 0.042 : 0.06) * (clean ? 0.82 : 1) * (settings.capScale || 1);
+  const font = settings.capFont && settings.capFont !== 'default' ? TOPIC_CAPTION_FONTS[settings.capFont] : clean ? 'Arial' : 'Arial Black';
+  const words = (vertical && !clean ? text.toUpperCase() : text).split(/\s+/);
+  g.save(); g.font = `${clean ? '600' : '900'} ${size}px "${font || 'Arial Black'}", sans-serif`;
+  g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.lineJoin = 'round';
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const test = line ? line + ' ' + word : word;
+    if (line && g.measureText(test).width > W * 0.84) { lines.push(line); line = word; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  const bottom = settings.capPosition === 'top' ? H * 0.10 + lines.length * size
+    : settings.capPosition === 'middle' ? H / 2 + lines.length * size / 2 : H * (vertical ? 0.72 : 0.92);
+  lines.forEach((text, i) => {
+    const y = bottom - (lines.length - 1 - i) * size * 1.15;
+    if (settings.capStyle === 'boxed') {
+      const w = g.measureText(text).width + size * 0.5;
+      g.fillStyle = 'rgba(0,0,0,0.6)'; g.fillRect((W - w) / 2, y - size * 0.95, w, size * 1.25);
+    } else {
+      g.lineWidth = size * (clean ? 0.14 : 0.18); g.strokeStyle = '#000'; g.strokeText(text, W / 2, y);
+    }
+    g.fillStyle = settings.capStyle === 'yellow' ? '#ffe500' : '#fff'; g.fillText(text, W / 2, y);
+  });
+  g.restore();
+}
+
+export const captionSampleHtml = () => '<canvas class="caption-sample" width="320" height="80" role="img" aria-label="Caption style preview"></canvas>';
+
+export function paintCaptionSample(root, { style, font, topic, vertical = false } = {}) {
+  const sample = root.querySelector('.caption-sample');
+  if (!sample) return;
+  const g = sample.getContext('2d'), W = sample.width, H = sample.height;
+  g.clearRect(0, 0, W, H);
+  if (topic) {
+    g.save(); g.translate(0, -(W * 0.875 - H) / 2);
+    drawTopicCaption(g, W, W * 0.875, 'This is a caption', { ...topic, capPosition: 'middle' }, vertical);
+    g.restore();
+  } else {
+    const opts = captionOpts(style);
+    const words = (opts.word ? ['caption'] : ['This', 'is', 'a', 'caption']).map((text) => ({ text }));
+    const drawing = drawCaptionCanvas({ group: { words }, highlight: words.length - 1 }, 16 / 9, style, font, 0.46);
+    const scale = W / drawing.width * 1.7;
+    g.drawImage(drawing, (W - drawing.width * scale) / 2, (H - drawing.height * scale) / 2, drawing.width * scale, drawing.height * scale);
+  }
+  sample.setAttribute('aria-label', 'Caption style preview: ' + (topic ? TOPIC_CAPTION_STYLES[topic.capStyle] || 'Bold' : CAPTION_STYLES[STYLE_ALIASES[style] || style || 'yellow_pop']?.[0] || 'Caption'));
+}
 export function captionAt(words, time, phrase = false) {
   if (!words?.length) return null;
   const cache = phrase === 'word' ? wordCache : phrase ? phraseCache : groupCache;
@@ -116,7 +173,7 @@ export function captionAt(words, time, phrase = false) {
 
 // Canvas the same aspect as the output, drawn the way libass renders an ASS style.
 // yAt: optional distance from the bottom (fraction of height), e.g. just above a stream clip's split line
-export function drawCaptionCanvas(caption, aspect, style = 'yellow_pop', fontKey = 'segoe', yAt = null) {
+export function drawCaptionCanvas(caption, aspect, style = 'yellow_pop', fontKey = 'segoe', yAt = null, xAt = null, scale = 1) {
   const canvas = document.createElement('canvas');
   const H = 1280, W = Math.round(H * aspect);
   canvas.width = W; canvas.height = H;
@@ -127,11 +184,12 @@ export function drawCaptionCanvas(caption, aspect, style = 'yellow_pop', fontKey
   if (opts.family) { family = opts.family; weight = opts.weight ?? weight; ratio = 0.85; }
   // Everything scales by width / 1080 (PlayResX = video width)
   const unit = W / 1080;
-  let size = Math.round((opts.size ?? 65) * unit); // ASS Fontsize
+  let size = Math.round((opts.size ?? 65) * unit * scale); // ASS Fontsize
   const outline = (opts.outline ?? 4.4) * unit, shadow = (opts.shadow ?? 2.5) * unit;
   const words = caption.group.words.map(w => (opts.keepCase ? w.text : w.text.toUpperCase()).replace(/\\/g, '/'));
   const hl = opts.noHighlight ? -1 : caption.highlight ?? keyWord(words);
-  const setFont = (s) => { g.font = `${opts.italic ? 'italic ' : ''}${weight} ${s}px ${family}, "Arial Black", Impact, sans-serif`; };
+  // (fonts that have every script: Chinese, Japanese, Korean, Hindi, Thai, Arabic… when the caption's font doesn't)
+  const setFont = (s) => { g.font = `${opts.italic ? 'italic ' : ''}${weight} ${s}px ${family}, "Arial Black", Impact, "Segoe UI", "Nirmala UI", "Microsoft YaHei UI", "Yu Gothic UI", "Malgun Gothic", "Leelawadee UI", "Segoe UI Historic", sans-serif`; };
   // Measured at the full font size to decide line breaks / shrinking
   setFont(size);
   const width = (ws) => g.measureText(ws.join(' ')).width;
@@ -158,15 +216,23 @@ export function drawCaptionCanvas(caption, aspect, style = 'yellow_pop', fontKey
   const layout = lines.map((line, row) => {
     const parts = line.map(i => ({ i, text: words[i], w: g.measureText(words[i]).width }));
     const total = parts.reduce((s, p) => s + p.w, 0) + space * (parts.length - 1);
-    let x = (W - total) / 2;
+    // xAt: where the middle of the words sits when the captions were dragged (0..1), else centered
+    let x = xAt == null ? (W - total) / 2 : Math.max(W * 0.02, Math.min(W * 0.98 - total, xAt * W - total / 2));
     const y = bottom - (lines.length - 1 - row) * lineH - size * 0.2;
     for (const p of parts) { p.x = x; x += p.w + space; }
     return { parts, y };
   });
+  if (opts.box) {
+    g.fillStyle = 'rgba(0,0,0,0.65)';
+    for (const { parts, y } of layout) if (parts.length) {
+      const first = parts[0], last = parts.at(-1);
+      g.fillRect(first.x - size * 0.25, y - size * 0.75, last.x + last.w - first.x + size * 0.5, size);
+    }
+  }
   // 1) drop shadow (50% black, offset like ASS Shadow), 2) outline, 3) fill
   g.fillStyle = g.strokeStyle = `rgba(0,0,0,${opts.shadowAlpha ?? 0.5})`; g.lineWidth = outline * 2;
   if (opts.shadow) { g.shadowColor = `rgba(0,0,0,${opts.shadowAlpha ?? 0.5})`; g.shadowBlur = shadow * 1.5; }
-  for (const { parts, y } of layout) for (const p of parts) { g.strokeText(p.text, p.x + shadow, y + shadow); g.fillText(p.text, p.x + shadow, y + shadow); }
+  if (!opts.box) for (const { parts, y } of layout) for (const p of parts) { g.strokeText(p.text, p.x + shadow, y + shadow); g.fillText(p.text, p.x + shadow, y + shadow); }
   g.shadowColor = 'transparent'; g.shadowBlur = 0;
   // neon glow behind the letters (Glow Word)
   if (opts.glow) {
@@ -175,7 +241,7 @@ export function drawCaptionCanvas(caption, aspect, style = 'yellow_pop', fontKey
     g.restore();
   }
   g.strokeStyle = outlineColor; g.lineWidth = outline * 2;
-  for (const { parts, y } of layout) for (const p of parts) g.strokeText(p.text, p.x, y);
+  if (outline) for (const { parts, y } of layout) for (const p of parts) g.strokeText(p.text, p.x, y);
   for (const { parts, y } of layout) for (const p of parts) { g.fillStyle = p.i === hl ? secondary : primary; g.fillText(p.text, p.x, y); }
   return canvas;
 }

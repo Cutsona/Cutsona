@@ -50,11 +50,12 @@ const fmtWhen = (t) => {
 
 // the Projects window and the project name in the header
 // hooks: buildDoc() -> { doc, uploads }, openDoc(project), newProject(), hasContent(), toast, esc
-export function initProjects({ buildDoc, openDoc, newProject, hasContent, toast, esc, suggestName = () => '' }) {
+const LS = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch {} return null; };
+export function initProjects({ buildDoc, openDoc, newProject, hasContent, toast, esc, suggestName = () => '', ready = () => true }) {
   const dlg = document.getElementById('projDlg');
   const $ = (s) => dlg.querySelector(s);
   let cur = { id: null, name: 'Untitled project', savedAt: 0 };
-  let dirty = false, saving = null, again = false, autoTimer = 0, confirmNew = false, confirmDel = null;
+  let dirty = false, saving = null, again = false, autoTimer = 0, confirmNew = false, confirmDel = null, transferring = false;
 
   function renderHeader() {
     document.getElementById('projName').textContent = cur.name;
@@ -62,7 +63,7 @@ export function initProjects({ buildDoc, openDoc, newProject, hasContent, toast,
     st.textContent = saving ? 'Saving…' : !cur.id ? (hasContent() ? 'Not saved' : '') : dirty ? 'Edited' : 'Saved';
     st.className = 'proj-state' + (!cur.id && hasContent() ? ' warn' : '');
   }
-  async function save({ name, asNew = false, quiet = false } = {}) {
+  async function save({ name, asNew = false, quiet = false, auto = false } = {}) {
     if (saving) { again = true; return saving; }
     if (!hasContent()) { if (!quiet) toast('Add a clip or a song first, then save', true); return null; }
     clearTimeout(autoTimer);
@@ -80,16 +81,22 @@ export function initProjects({ buildDoc, openDoc, newProject, hasContent, toast,
         dirty = false;
         if (afterSave && afterSave(j.doc)) again = true; // a clip lost its copy: save once more with a fresh one
         if (!quiet) toast(`Saved “${j.name}”`);
+        LS('cutsona.lastProj', JSON.stringify({ id: j.id, name: j.name, at: Date.now() }));
+        if (!dirty) LS('cutsona.unsaved', null);
         return j;
-      } catch (e) { toast(e.message || 'Couldn’t save the project', true); return null; }
+      } catch (e) { if (!auto) toast(e.message || 'Couldn’t save the project', true); return null; }
       finally { saving = null; renderHeader(); if (!dlg.hidden) renderList(); if (again) { again = false; save({ quiet: true }); } }
     })();
     return saving;
   }
-  // after any change: a named project saves itself a moment later
+  // after any change: the project saves itself a moment later (a new one too, named after its first clip),
+  // so a crash or an update never loses more than a few seconds
   function changed() {
+    if (transferring) return;
     dirty = true; renderHeader();
-    if (cur.id) { clearTimeout(autoTimer); autoTimer = setTimeout(() => save({ quiet: true }), 2500); }
+    if (hasContent()) LS('cutsona.unsaved', String(Date.now()));
+    if (cur.id) { clearTimeout(autoTimer); autoTimer = setTimeout(() => save({ quiet: true, auto: true }), 2500); }
+    else if (hasContent() && ready()) { clearTimeout(autoTimer); autoTimer = setTimeout(() => { if (!cur.id && hasContent() && ready()) save({ quiet: true, auto: true }); }, 5000); }
   }
 
   async function renderList() {
@@ -102,7 +109,7 @@ export function initProjects({ buildDoc, openDoc, newProject, hasContent, toast,
     $('#projNewConfirm').hidden = !confirmNew;
     list.innerHTML = projects.length ? projects.map((p) => `<li class="pj ${p.id === cur.id ? 'on' : ''}" data-id="${esc(p.id)}">
         <div class="pj-thumb" style="${p.thumb ? `background-image:url(${esc(p.thumb)})` : ''}"></div>
-        <div class="pj-info"><b>${esc(p.name)}</b><small>${p.mode === 'stream' ? 'Stream clips' : 'Edits'} · ${p.clips} clip${p.clips === 1 ? '' : 's'}${p.song ? ' · ♪ ' + esc(p.song.replace(/\.[^.]+$/, '')) : ''} · ${fmtWhen(p.savedAt)}</small></div>
+        <div class="pj-info"><b>${esc(p.name)}</b><small>${p.mode === 'stream' ? 'Clipper Mode' : 'Edit Mode'} · ${p.clips} clip${p.clips === 1 ? '' : 's'}${p.song ? ' · ♪ ' + esc(p.song.replace(/\.[^.]+$/, '')) : ''} · ${fmtWhen(p.savedAt)}</small></div>
         <div class="pj-act">${confirmDel === p.id
           ? `<span class="pj-q">Delete it for good?</span><button class="small danger" data-del-yes>Delete</button><button class="small" data-del-no>Keep</button>`
           : `${p.id === cur.id ? '<span class="pj-open">Open now</span>' : '<button class="small primary-act" data-open>Open</button>'}<button class="small" data-del title="Delete this project">Delete</button>`}</div></li>`).join('')
@@ -122,7 +129,27 @@ export function initProjects({ buildDoc, openDoc, newProject, hasContent, toast,
       else toast(`Opened “${pr.name}”`);
     } catch (e) { toast(e.message, true); }
   }
+  async function transfer(name, doc) {
+    if (transferring) throw new Error('A Quick project is already opening.');
+    transferring = true;
+    clearTimeout(autoTimer);
+    try {
+      while (saving) await saving;
+      if (hasContent() && (!cur.id || dirty)) {
+        const saved = await save({ quiet: true });
+        if (!saved) throw new Error('Save the current edit before opening the transferred project.');
+      }
+      await openDoc({ doc });
+      cur = { id: null, name, savedAt: 0 };
+      dirty = true;
+      renderHeader();
+      return await save({ name, quiet: true });
+    } finally {
+      transferring = false;
+    }
+  }
   function startNew() {
+    LS('cutsona.unsaved', null);
     newProject();
     cur = { id: null, name: 'Untitled project', savedAt: 0 }; dirty = false; confirmNew = false;
     renderHeader(); close(); toast('New project');
@@ -164,5 +191,25 @@ export function initProjects({ buildDoc, openDoc, newProject, hasContent, toast,
   function close() { dlg.hidden = true; lastFocus?.focus?.(); }
   document.getElementById('btnProject').onclick = show;
   renderHeader();
-  return { show, close, save, changed, renderHeader, isOpen: () => !dlg.hidden, current: () => cur };
+  window.__cutsonaFlush = async () => { clearTimeout(autoTimer); if (hasContent() && (dirty || !cur.id)) await save({ quiet: true, auto: true }); if (cur.id) LS('cutsona.reopen', cur.id); };
+  // recover: Cutsona closed (a crash, an update, the PC shutting down) with changes still unsaved
+  {
+    const crashed = LS('cutsona.running') === '1';
+    LS('cutsona.running', '1');
+    addEventListener('beforeunload', () => { LS('cutsona.running', '0'); if (cur.id && !dirty) LS('cutsona.unsaved', null); });
+    let last = null; try { last = JSON.parse(LS('cutsona.lastProj') || 'null'); } catch {}
+    // just updated: open the edit you had open, as it was
+    const reopen = LS('cutsona.reopen'); LS('cutsona.reopen', null);
+    if (reopen) setTimeout(() => open(reopen), 700);
+    else if (last?.id && (crashed || LS('cutsona.unsaved'))) setTimeout(() => {
+      if (cur.id === last.id) return;
+      const bar = document.createElement('div'); bar.className = 'recover-bar'; bar.setAttribute('role', 'alert');
+      bar.innerHTML = `<span>Cutsona closed while you were editing <b>${esc(last.name)}</b>.</span><button class="small primary">Open where I left off</button><button class="small ghost">Not now</button>`;
+      document.body.appendChild(bar);
+      const done = () => { bar.remove(); LS('cutsona.unsaved', null); };
+      bar.querySelector('.primary').onclick = () => { done(); open(last.id); };
+      bar.querySelector('.ghost').onclick = done;
+    }, 900);
+  }
+  return { show, close, save, transfer, changed, renderHeader, isOpen: () => !dlg.hidden, current: () => cur };
 }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { planEdit, frameAt, makeCtx, srcOffset } from '../app/js/edit.js';
 import { syntheticMusic } from '../app/js/audio.js';
-import { STYLES, styleWith } from '../app/js/styles.js';
+import { STYLES, styleWith, allParts } from '../app/js/styles.js';
 import { findMoments, speechPhrases, chooseWindow } from '../app/js/moments.js';
 import { buildTrack, focusAt, selectSubject, detectFaces, subjectGroup, cameraAt } from '../app/js/track.js';
 import { frameChange } from '../app/js/scene.js';
@@ -207,7 +207,25 @@ test('style parts can be ticked off', () => {
   const dim = styleWith('dimension', ['tilt', 'echo', 'flips']);
   assert.equal(dim.cont.card, 1); assert.equal(dim.cont.ghosts, 0); assert.ok(!dim.trans.flip);
   assert.equal(STYLES.dimension.cont.card, 0.86, 'the original style is untouched');
-  for (const [id, s] of Object.entries(STYLES)) if (!s.hidden) assert.ok(s.parts?.length >= 2, `${id} has tickable parts`);
+  for (const [id, s] of Object.entries(STYLES)) if (!s.hidden && !s.pure) assert.ok(s.parts?.length >= 2, `${id} has tickable parts`);
+  // effects a style doesn't have can be added ('+key'), without touching the original
+  const added = styleWith('pure', ['+flips', '+detail', '+shock']);
+  assert.ok(added.trans.flip > 0 && added.fx.detail === 1 && added.beat.shockBeat === 1);
+  assert.ok(!STYLES.pure.trans.flip && !STYLES.pure.fx, 'Beat Sync itself stays plain');
+  assert.ok(allParts('pure').length >= 40 && allParts('pure').every((p) => !p.native), 'every effect is listed for any style');
+});
+
+test('Beat Sync is only cuts on the beat: no zooms, flashes or effects', () => {
+  const c = clip(40, []);
+  const music = syntheticMusic();
+  const plan = planEdit({ clips: [c], music, musicStart: 0, length: 15, styleId: 'pure', seed: 3 });
+  assert.ok(plan.segments.length > 4);
+  assert.ok(plan.segments.every((s) => (!s.transIn || s.transIn.type === 'cut') && s.profile.type === 'const' && s.profile.r === 1));
+  const ctx = makeCtx({ intensity: 1, framing: 'fill', filter: 'none', fx: [], format: '9:16' }, music, [c]);
+  for (let t = 0; t < plan.duration; t += 0.1) {
+    const { U } = frameAt(plan, t, ctx);
+    assert.equal(U.zoom, 1); assert.equal(U.flash, 0); assert.equal(U.rgb, 0); assert.equal(U.shock || 0, 0);
+  }
 });
 
 test('best quote mode plays the inspiring line in full', () => {

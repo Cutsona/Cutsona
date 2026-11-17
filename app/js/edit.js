@@ -138,12 +138,10 @@ export function planEdit({ clips, music, musicStart, length, styleId, seed, paci
   // choose the end on a downbeat close to the requested length
   let end = length;
   {
+    // the length you asked for, to the tenth of a second (it used to snap to a downbeat anywhere from 75% of
+    // it, so "30 s" came out as 23 to 31 s); a beat right at that moment is used so the last cut lands on it
     let best = Infinity;
-    for (const b of beats) {
-      if (b.t < length * 0.75) continue;
-      const cost = Math.abs(b.t - length) + (b.down ? 0 : period * 1.5);
-      if (cost < best) { best = cost; end = b.t; }
-    }
+    for (const b of beats) { const d = Math.abs(b.t - length); if (d <= 0.12 && d < best) { best = d; end = b.t; } }
     if (end < 1) end = length;
   }
   const energyAt = (t) => sampleCurve(music.energy, music.hop, t + musicStart);
@@ -224,7 +222,7 @@ export function planEdit({ clips, music, musicStart, length, styleId, seed, paci
     } else for (let need = target; need >= Math.min(0.5, target) - 0.001; need -= Math.min(0.5, target)) {
       // editor's judgement: hook first, energy of this part of the song (and any drop in it), clip variety
       const sense = { first: cursor < 0.05, intro, impact: beats.some((b) => b.impact && b.t >= cursor - 0.05 && b.t < cursor + need * 0.6),
-        use: clipUse, share: clipShare };
+        use: clipUse, share: clipShare, spread: order !== 'story' };
       const energy = Math.max(energyAt(cursor), energyAt(cursor + need * 0.5));
       window = chooseWindow(clips, need, used, previous, energy, seed, avoid, false, sense);
       if (window) break;
@@ -242,8 +240,9 @@ export function planEdit({ clips, music, musicStart, length, styleId, seed, paci
         break;
       }
     }
-    // Out of fresh footage: cut to another moment (least-shown first) so every edit runs its full length.
-    if (!window && !story) {
+    // Out of fresh footage: cut to another moment (least-shown first) so every edit runs its full length
+    // (in order too: never a short edit because the story ran out of new moments)
+    if (!window) {
       const pool = fillClips || clips;
       for (const prev of [previous, null]) { // tiny clips: last resort may even replay the last shot
         for (let need = target; need >= Math.min(0.5, target) - 0.001; need -= Math.min(0.5, target)) {
@@ -272,8 +271,12 @@ export function planEdit({ clips, music, musicStart, length, styleId, seed, paci
     duration = Math.min(duration, Math.max(0, (c.usableEnd ?? c.duration) - 0.04 - window.start));
     const nextStill = (c.stills || []).find(([s, e]) => e > window.start + 0.04);
     if (nextStill) duration = Math.min(duration, Math.max(0, nextStill[0] - 0.04 - window.start));
+    // a photo stays up for its own time: the one you set for it, or a few beats of the song
+    const photoHold = c.photo ? (c.hold > 0 ? c.hold : Math.max(0.8, Math.min(2.5, period * (period < 0.45 ? 4 : 2)))) : 0;
+    if (photoHold && !intro) duration = Math.min(end - cursor, photoHold, Math.max(0, (c.usableEnd ?? c.duration) - 0.04 - window.start));
     // every change of shot lands on a beat cut: stretch or trim this shot to the nearest cut the footage allows
-    if ((mode !== 'quotes' || !speech) && duration >= 0.08) {
+    // (a photo with your own time only moves to a beat that's close to it)
+    if ((mode !== 'quotes' || !speech) && duration >= 0.08 && !(c.photo && c.hold > 0 && !cuts.some((t) => Math.abs(t - cursor - duration) < period * 0.5))) {
       const avail = Math.min((c.usableEnd ?? c.duration) - 0.04, nextStill ? nextStill[0] - 0.04 : Infinity) - window.start;
       const want = cursor + duration;
       let best = null, bd = Infinity;
@@ -284,7 +287,7 @@ export function planEdit({ clips, music, musicStart, length, styleId, seed, paci
         const d = Math.abs(t - want) + (speech && t < want - 0.05 ? 0.6 : 0);
         if (d < bd) { bd = d; best = t; }
       }
-      if (best != null && Math.abs(best - want) < Math.max(period * 1.6, 0.6)) duration = best - cursor;
+      if (best != null && Math.abs(best - want) < (c.photo && c.hold > 0 ? period * 0.5 : Math.max(period * 1.6, 0.6))) duration = best - cursor;
     }
     if (duration < 0.08) {
       // unusable spot: mark it and look elsewhere rather than ending the edit early
@@ -295,13 +298,14 @@ export function planEdit({ clips, music, musicStart, length, styleId, seed, paci
       continue;
     }
     const runEnd = cursor + duration;
-    const points = [cursor, ...cuts.filter(t => t > cursor + 0.15 && t < runEnd - 0.15), runEnd];
+    // (a photo is one shot: no beat cuts inside it)
+    const points = c.photo ? [cursor, runEnd] : [cursor, ...cuts.filter(t => t > cursor + 0.15 && t < runEnd - 0.15), runEnd];
     let source = window.start;
     for (let j = 0; j < points.length - 1; j++) {
       const start = points[j], segEnd = points[j + 1], d = segEnd - start;
       const beat = beats.find(b => Math.abs(b.t - start) < 0.03);
       const isImpact = !!beat?.impact;
-      let spec = noSpeed || speech ? { type: 'const', r: 1 } : pickWeighted(r, style.speed);
+      let spec = noSpeed || speech || c.photo ? { type: 'const', r: 1 } : pickWeighted(r, style.speed);
       // Stuttering loses the chronology of an action; reserve variation for ramps and effects.
       if (spec.type === 'stutter') spec = { type: 'const', r: 1 };
       let profile = makeProfile(spec, d);
@@ -368,7 +372,7 @@ export function defaultUniforms() {
     scan: 0, glow: 0, mirror: 0, ghosts: 0, bars: 0, round: 0, shadow: 0, wrap: 0, text: 0, textScale: 1, time: 0,
     pixel: 0, poster: 0, fish: 0, wave: 0, crt: 0, kaleido: 0, bleed: 0, edge: 0, ink: 0, halftone: 0, duo: 0, duoA: [0, 0, 0], duoB: [1, 1, 1],
     sepia: 0, leak: 0, film: 0, split: 0, fade: 0, focus: 0, sourceRect: [0, 0, 1, 1],
-    hook: 0, hookScale: 1, hookAnchor: [0.5, 0.8], gameWhole: 0, gameFill: [0, 0, 1, 1] };
+    hook: 0, hookScale: 1, hookAnchor: [0.5, 0.8], gameWhole: 0, gameFill: [0, 0, 1, 1], outside: 0 };
 }
 
 // ---- hook text timing: shown from `start` to `end` seconds (end 0 = to the end), quick fade in / out ----
@@ -420,7 +424,32 @@ export function makeCtx(e, music, clips) {
     hook: (e.text || '').trim() ? { start: Math.max(0, Number(e.hookStart) || 0), end: Math.max(0, Number(e.hookEnd) || 0),
       anchor: [Number(e.hookX ?? 0.5), 1 - Number(e.hookY ?? 0.2)] } : null,
     keys: Array.isArray(e.keys) && e.keys.length ? [...e.keys].sort((a, b) => a.t - b.t) : null,
-    stack: e.stackOpts || null };
+    stack: e.stackOpts || null, pan: e.pan || null, panKeys: e.panKeys || null };
+}
+// where you dragged the picture on a take (the Pan in each part): moves a crop box [x, y, w, h] by a share of its own
+// size, kept inside the frame
+function panRect(r, p) {
+  if (!p) return r;
+  // p = [x, y, zoom]: the zoom (scroll on the take) shrinks the box around its middle, then the drag moves it
+  const z = Math.max(1, p[2] || 1), w = r[2] / z, h = r[3] / z, cx = r[0] + r[2] / 2, cy = r[1] + r[3] / 2;
+  const x = clamp(cx - w / 2 - (p[0] || 0) * w, 0, Math.max(0, 1 - w)), y = clamp(cy - h / 2 - (p[1] || 0) * h, 0, Math.max(0, 1 - h));
+  return [x, y, w, h];
+}
+// the same for the full picture: shifts what the camera looks at by a share of what shows
+function panFull(U, p, clip, ctx) {
+  if (!p || U.fit > 0.5) return;
+  if (p[2] > 1) U.zoom *= p[2]; // scrolled in on this take
+  if (!(p[0] || p[1])) return;
+  const [, , w, h] = U.sourceRect;
+  const va = ((clip.w || 16) * w) / ((clip.h || 9) * h), oa = ctx.aspect || 9 / 16;
+  const sCover = Math.max(oa / va, 1), z = Math.max(1, U.zoom || 1);
+  if (U.focus) {
+    // the crop is where the camera points (share of the picture): move it by what the window shows
+    U.crop = [clamp(U.crop[0] - p[0] * oa / (va * sCover * z), 0, 1), clamp(U.crop[1] - p[1] / (sCover * z), 0, 1)];
+  } else {
+    const ox = va * sCover - oa, oy = sCover - 1;
+    U.crop = [ox > 1e-3 ? clamp(U.crop[0] - p[0] * oa / ox, 0, 1) : U.crop[0], oy > 1e-3 ? clamp(U.crop[1] - p[1] / oy, 0, 1) : U.crop[1]];
+  }
 }
 
 // fade-in / fade-out multiplier (0..1) at time t of an edit that lasts D seconds
@@ -434,6 +463,18 @@ export function fadeGain(t, D, fin, fout) {
 // ctx: see makeCtx
 // Stream clips: no beat effects, just the layout (cam on top / full frame following the streamer),
 // a punch-in on the big reactions, the overlay (bar + title) and the filter if one is picked.
+// where a part (cam / game / full) is moved to at time t: its camera keyframes when it has some (they glide
+// smoothly from one to the next), else the one fixed move you made
+function panOf(ctx, part, t) {
+  const ks = ctx.panKeys?.[part];
+  if (!ks?.length) return ctx.pan?.[part];
+  if (t <= ks[0].t) return [ks[0].x, ks[0].y, ks[0].z ?? 1];
+  const last = ks[ks.length - 1];
+  if (t >= last.t) return [last.x, last.y, last.z ?? 1];
+  let i = 0; while (i < ks.length - 2 && ks[i + 1].t <= t) i++;
+  const a = ks[i], b = ks[i + 1], u = clamp((t - a.t) / Math.max(1e-4, b.t - a.t), 0, 1), k = u * u * (3 - 2 * u);
+  return [a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, (a.z ?? 1) + ((b.z ?? 1) - (a.z ?? 1)) * k];
+}
 function frameStream(plan, t, ctx) {
   const si = findSegment(plan, t), seg = plan.segments[si];
   const clip = ctx.clips[seg.clip] || {};
@@ -444,6 +485,7 @@ function frameStream(plan, t, ctx) {
   U.contrast = L.contrast ?? 1; U.sat = L.sat ?? 1; U.tint = L.tint || [1, 1, 1]; U.bright = L.bright || 0;
   U.vignette = L.vignette || 0; U.grain = L.grain || 0; U.scan = L.scan || 0; U.sharp = L.sharp || 0;
   const ffx = F.fx || {};
+  U.lut = F.lut || ''; U.lutAmt = F.lutAmt ?? 1;
   for (const k of FX_KEYS) U[k] = ffx[k] || 0;
   if (ffx.duo) { U.duoA = ffx.duoA; U.duoB = ffx.duoB; }
   const H = plan.highlight || {};
@@ -455,33 +497,84 @@ function frameStream(plan, t, ctx) {
   }
   const [x, y, w, h] = U.sourceRect;
   const rel = (r) => [(r[0] - x) / w, (r[1] - y) / h, r[2] / w, r[3] / h];
-  if (H.layout === 'stack') {
+  if (H.layout === 'cam') {
+    // webcam + screen: the webcam cropped exactly to its own box (not a zoom on the face) in one panel, as tall as
+    // its shape needs, and the stream screen in the rest ("Screen": filling it, or the whole screen fitted;
+    // "Which half is on top" swaps them)
+    const so = ctx.stack || {}, area = U.sourceRect, oa = ctx.aspect || 9 / 16, va = (clip.w || 16) / (clip.h || 9);
+    U.sourceRect = [0, 0, 1, 1];
+    const cam = H.cam || {};
+    let cb = cam.box ? [...cam.box] : stackRects(clip, oa, 0.4, H.cam, { cam: 'whole', area }).camRect;
+    const camPix = (cb[2] * va) / Math.max(1e-4, cb[3]);
+    const split = clamp(oa / camPix, 0.26, 0.58), want = oa / split; // the panel's shape (width / height)
+    // the box is wider or taller than its panel can show: trim it to the panel's shape around the streamer
+    if (camPix > want + 0.01) { const nw = (cb[3] * want) / va; cb = [clamp((cam.x ?? cb[0] + cb[2] / 2) - nw / 2, cb[0], cb[0] + cb[2] - nw), cb[1], nw, cb[3]]; }
+    else if (camPix < want - 0.01) { const nh = (cb[2] * va) / want; cb = [cb[0], clamp((cam.y ?? cb[1] + cb[3] / 2) - nh / 2, cb[1], cb[1] + cb[3] - nh), cb[2], nh]; }
+    let cr = panRect(cb, panOf(ctx, 'cam', t));
+    if (pz > 1) { const s = 1 / pz; cr = [cr[0] + cr[2] * (1 - s) / 2, cr[1] + cr[3] * (1 - s) * 0.4, cr[2] * s, cr[3] * s]; }
+    // the screen panel: the rest of the picture's height, the whole stream picture fitted into it
+    const whole = so.game === 'whole', g2 = stackRects(clip, oa, split, H.cam, { game: whole ? 'whole' : 'fill', area });
+    const gr = whole ? g2.gameRect : panRect(g2.gameRect, panOf(ctx, 'game', t));
+    U.stack = 1; U.gameFill = g2.gameFill; U.outside = so.edge === 'blur' ? 0 : 1;
+    if (so.swap) { U.stackY = 1 - split; U.camRect = gr; U.gameRect = cr; U.gameWhole = whole ? 2 : 0; }
+    else { U.stackY = split; U.camRect = cr; U.gameRect = gr; U.gameWhole = whole ? 1 : 0; }
+  } else if (H.layout === 'stack') {
     // cam / screen template: cam share of the height, which side is on top, whole screen or a crop, face or whole webcam
     const so = ctx.stack || {}, split = so.split || 0.5;
-    const { camRect, gameRect, gameFill } = stackRects(clip, ctx.aspect || 9 / 16, split, H.cam, { game: so.game, cam: so.cam });
-    let cr = rel(camRect);
+    // every crop here is in whole-frame coordinates (the picture area only limits the "fill" crop), so the source is the whole frame
+    const area = U.sourceRect;
+    U.sourceRect = [0, 0, 1, 1];
+    const { camRect, gameRect, gameFill } = stackRects(clip, ctx.aspect || 9 / 16, split, H.cam, { game: so.game, cam: so.cam, area });
+    const P = { cam: panOf(ctx, 'cam', t), game: panOf(ctx, 'game', t) };
+    let cr = panRect(camRect, P.cam);
     if (pz > 1) { const s = 1 / pz; cr = [cr[0] + cr[2] * (1 - s) / 2, cr[1] + cr[3] * (1 - s) * 0.4, cr[2] * s, cr[3] * s]; }
-    const gr = rel(gameRect);
-    U.stack = 1; U.gameFill = rel(gameFill);
+    const gr = so.game === 'whole' ? gameRect : panRect(gameRect, P.game);
+    U.stack = 1; U.gameFill = gameFill; U.outside = so.edge === 'blur' ? 0 : 1;
     if (so.swap) { U.stackY = 1 - split; U.camRect = gr; U.gameRect = cr; U.gameWhole = so.game === 'whole' ? 2 : 0; }
     else { U.stackY = split; U.camRect = cr; U.gameRect = gr; U.gameWhole = so.game === 'whole' ? 1 : 0; }
   } else {
-    // full frame: the auto-focus camera keeps the streamer in the picture
+    // full frame: the auto-focus camera keeps the streamer in the picture (or the whole video, with bars around it)
     U.fit = 0; U.crop = [0.5, 0.5]; U.zoom = pz;
-    if (clip.track) {
+    const so = ctx.stack || {};
+    if (so.fullFit === 'whole') { U.fit = 1; U.outside = so.edge === 'blur' ? 0 : 1; }
+    // follows the streamer only when there is one on camera (an IRL / full-cam stream, or a facecam); gameplay
+    // without one stays still, centered, instead of chasing whoever the game shows
+    else if (clip.track && (H.cam?.full || H.cam?.steady)) {
       const va = ((clip.w || 16) * w) / ((clip.h || 9) * h), oa = ctx.aspect || 9 / 16;
       const cam = cameraAt(clip.track, src, Math.min(1, oa / va) * w / pz, Math.min(1, va / oa) * h / pz);
       U.crop = [clamp((cam.x - x) / w, 0, 1), clamp((cam.y - y) / h, 0, 1)]; U.focus = 1;
     }
+    panFull(U, panOf(ctx, 'full', t), clip, ctx);
   }
   U.text = 1; U.textScale = 1;
   if (ctx.hook) { U.hook = hookAlpha(t, plan.duration, ctx.hook); U.hookAnchor = ctx.hook.anchor; }
   if (ctx.fadeIn || ctx.fadeOut) U.fade = 1 - fadeGain(t, plan.duration, ctx.fadeIn, ctx.fadeOut);
-  if (H.layout !== 'stack') applyKeys(U, keyValues(ctx.keys, t));
+  // card motion (keyframes) moves the whole picture in every layout (cam + screen too)
+  applyKeys(U, keyValues(ctx.keys, t));
   return { si, seg, src, U };
+}
+// how much of a cut shows at time t because of its own fade in / out (1 = all of it)
+export function cutFades(plan, si, clips) {
+  const seg = plan.segments[si]; if (!seg) return [0, 0];
+  const clip = clips?.[seg.clip] || {}, d = seg.end - seg.start, vf = clip.vfade || {};
+  const prev = plan.segments[si - 1], next = plan.segments[si + 1];
+  const joins = (a, b) => a && b && a.clip === b.clip; // still the same clip: no fade in between (a cut's own fade still can)
+  let fi = seg.fade?.in ?? (vf.in && !joins(prev, seg) ? vf.in : 0), fo = seg.fade?.out ?? (vf.out && !joins(seg, next) ? vf.out : 0);
+  // a short cut keeps some of its picture: the fades share at most 80% of it
+  const room = d * 0.8; if (fi + fo > room && fi + fo > 0) { const k = room / (fi + fo); fi *= k; fo *= k; }
+  return [fi, fo];
+}
+function cutFade(plan, si, ctx) {
+  const seg = plan.segments[si]; if (!seg) return 1;
+  const [fi, fo] = cutFades(plan, si, ctx.clips), tau = ctx.__t - seg.start, d = seg.end - seg.start;
+  let g = 1;
+  if (fi > 0.01) g = Math.min(g, clamp(tau / fi, 0, 1));
+  if (fo > 0.01) g = Math.min(g, clamp((d - tau) / fo, 0, 1));
+  return g * g * (3 - 2 * g);
 }
 export function frameAt(plan, t, ctx) {
   if (plan.mode === 'stream') return frameStream(plan, t, ctx);
+  ctx.__t = t;
   const st = plan.style;
   const I = ctx.intensity ?? 1;
   const si = findSegment(plan, t);
@@ -490,6 +583,7 @@ export function frameAt(plan, t, ctx) {
   const d = seg.end - seg.start;
   const clip = ctx.clips[seg.clip] || {};
   let src = seg.srcStart + srcOffset(seg, tau);
+  if (seg.loop && clip.duration > 0) src %= clip.duration;
   if (clip.duration) {
     src = clamp(src, 0, clip.duration - 0.04);
   }
@@ -509,6 +603,7 @@ export function frameAt(plan, t, ctx) {
   U.card = c.card || 1;
   U.contrast = L.contrast ?? 1; U.sat = L.sat ?? 1; U.tint = L.tint || [1, 1, 1]; U.bright = L.bright || 0;
   U.vignette = L.vignette || 0; U.grain = L.grain || 0; U.scan = L.scan || 0; U.sharp = L.sharp || 0;
+  U.lut = F.lut || ''; U.lutAmt = F.lutAmt ?? 1; // a film look (colour table)
   U.glow = Math.max(c.glow || 0, F.glow || 0); U.ghosts = c.ghosts || 0; U.bars = c.bars || 0; U.round = c.round || 0; U.shadow = c.shadow || 0;
   U.mirror = seg.mirror || 0;
   // always-on shader effects from the style + the filter
@@ -532,6 +627,7 @@ export function frameAt(plan, t, ctx) {
     const aim = aimFor(fo, clip, src, Math.min(1, oa / va) * w, Math.min(1, va / oa) * h);
     U.crop = [clamp((aim.x - x) / w, 0, 1), clamp((aim.y - y) / h, 0, 1)]; U.focus = 1; U.zoom *= aim.z;
   }
+  panFull(U, panOf(ctx, 'full', t), clip, ctx);
 
   // continuous motion
   const mt = t + plan.musicStart;
@@ -572,6 +668,11 @@ export function frameAt(plan, t, ctx) {
     if (B.pixelBeat) U.pixel = Math.max(U.pixel, B.pixelBeat * env * env * s);
     if (B.fishBeat) U.fish += B.fishBeat * env * s;
     if (B.moshBeat) U.mosh = Math.max(U.mosh, B.moshBeat * (b.down || b.impact ? env : env * 0.4) * s);
+    // a shockwave ring rushes out on the drops; slices of the picture jump sideways on the hits
+    const hitBeat = b.down || b.impact;
+    if ((B.shockBeat || X.has('shockwave')) && hitBeat && dt < 0.5) U.shock = Math.max(U.shock || 0, Math.exp(-dt / 0.22) * Math.min(1, I));
+    if ((B.sliceBeat || X.has('slices')) && hitBeat && dt < 0.25) U.slice = Math.max(U.slice || 0, (B.sliceBeat || 1) * (1 - dt / 0.25) * I);
+    if (X.has('prism') || st.fx?.prism) U.prism = Math.max(U.prism || 0, (st.fx?.prism || 0.55) + 0.6 * env * s);
     if (X.has('datamosh')) U.mosh = Math.max(U.mosh, 0.3 + 0.6 * env * s);
 
     // ---- extra effects picked by the user ----
@@ -612,6 +713,9 @@ export function frameAt(plan, t, ctx) {
     if (X.has('glow')) U.glow = Math.max(U.glow, 0.8);
     if (X.has('bars')) U.bars = Math.max(U.bars, 0.11);
     if (X.has('vignette')) U.vignette = Math.max(U.vignette, 0.75);
+    if (X.has('detail')) { U.detail = Math.max(U.detail || 0, 0.95); U.sharp = Math.max(U.sharp, 0.5); }
+    if (X.has('chroma')) U.chroma = Math.max(U.chroma || 0, 0.8);
+    if (X.has('prism')) U.prism = Math.max(U.prism || 0, 0.55);
   }
   if (F.hueSpin) U.hue += t * F.hueSpin;
 
@@ -623,7 +727,17 @@ export function frameAt(plan, t, ctx) {
   // parts of the style that were ticked off on the card
   if (st.noBlur) { U.blur = [0, 0]; U.radial = 0; }
   if (st.noRgb && !X.has('rgb')) U.rgb = 0;
-  U.bars = 0;
+  U.bars = plan.quick && X.has('bars') ? 0.13 : 0;
+  if (plan.quick) {
+    const q = clamp(tau / Math.max(d, 0.001), 0, 1);
+    if (seg.quickMotion === 0) U.zoom *= 1 + 0.13 * q;
+    if (seg.quickMotion === 1) U.zoom *= 1.13 - 0.13 * q;
+    if (seg.quickMotion === 2 || seg.quickMotion === 3) {
+      U.zoom *= 1.12;
+      U.offset[0] += (seg.quickMotion === 2 ? 0.5 - q : q - 0.5) * 0.12;
+    }
+    if (plan.quick.tint) U.lut = FILTERS[plan.quick.tint]?.lut || U.lut;
+  }
 
   // hook text: its own layer, shown for the time you set, with a little pop on the beat
   if (ctx.hook) {
@@ -633,6 +747,11 @@ export function frameAt(plan, t, ctx) {
   // fade from / to black
   const fout = Math.max(ctx.fadeOut || 0, st.endFade || 0); // Movie / Caption edits end on a fade to black
   if (ctx.fadeIn || fout) U.fade = 1 - fadeGain(t, plan.duration, ctx.fadeIn, fout);
+  // fades of a cut (right-click the FX row) or of its clip (set in the clip's preview): the clip fades in where it
+  // comes on and out where it goes off; back-to-back cuts of the same clip don't blink in between
+  const cf = cutFade(plan, si, ctx);
+  if (cf < 1) U.fade = 1 - (1 - (U.fade || 0)) * cf;
+  if (plan.quick) U.fade = Math.max(U.fade || 0, 1 - fadeGain(tau, d, seg.quickFadeIn || 0, seg.quickFadeOut || 0));
   // your keyframes (card motion) go on top of everything the style does
   applyKeys(U, keyValues(ctx.keys, t));
   return { si, seg, src, U };

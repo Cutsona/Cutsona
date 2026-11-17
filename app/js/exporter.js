@@ -4,6 +4,10 @@ import { Renderer, drawTextCanvas } from './renderer.js';
 import { frameAt, srcOffset, makeCtx } from './edit.js';
 import { encodeWav } from './audio.js';
 import { Muxer, ArrayBufferTarget } from './vendor/mp4-muxer.mjs';
+import { clipLevel, audioOf, clipChain, clipSpan } from './clipaudio.js';
+import { fadeParam, fadeAt } from './fadewave.js';
+import { songChain } from './songedit.js';
+import { loadExportOverlays, drawExportOverlays, releaseExportOverlays } from './overlays.js';
 
 const H264 = ['avc1.640034', 'avc1.640033', 'avc1.64002A', 'avc1.640028', 'avc1.4D0034', 'avc1.4D002A', 'avc1.42E034', 'avc1.42E02A'];
 
@@ -78,7 +82,7 @@ export function stretchSegment(oac, buf, seg, d) {
   return res;
 }
 
-async function mixAudio({ plan, clips, music, settings, D }) {
+async function mixAudio({ plan, clips, music, settings, D, quickAudio }) {
   const sr = 48000;
   const len = Math.max(1, Math.ceil(D * sr));
   const oac = new OfflineAudioContext(2, len, sr);
@@ -89,11 +93,26 @@ async function mixAudio({ plan, clips, music, settings, D }) {
     if (fin > 0) param.linearRampToValueAtTime(vol, fin);
     if (fout > 0) { param.setValueAtTime(vol, Math.max(fin, D - fout)); param.linearRampToValueAtTime(0.0001, D); }
   };
-  if (music && music.buffer && settings.musicVol > 0) {
+  if (quickAudio?.voice) {
+    const src = oac.createBufferSource(), gain = oac.createGain();
+    gain.gain.value = quickAudio.voiceGain ?? 1;
+    src.buffer = quickAudio.voice; src.connect(gain).connect(oac.destination); src.start();
+  }
+  if (quickAudio?.song) {
+    const src = oac.createBufferSource(), gain = oac.createGain(), duck = oac.createGain();
+    src.buffer = quickAudio.song; src.loop = true;
+    envelope(gain.gain, quickAudio.songGain ?? plan.quick.gain, 1.5, 3);
+    for (const cue of plan.quick.captions) {
+      duck.gain.setTargetAtTime(0.45, cue.start, 0.04);
+      duck.gain.setTargetAtTime(1, cue.end, 0.08);
+    }
+    src.connect(gain).connect(duck).connect(oac.destination); src.start(); src.stop(D);
+  }
+  if (!plan.quick && music && music.buffer && settings.musicVol > 0 && settings.musicMute !== 'on') {
     const src = oac.createBufferSource();
     src.buffer = music.buffer;
     const g = oac.createGain();
-    envelope(g.gain, settings.musicVol, settings.musicFadeIn, settings.musicFadeOut);
+    fadeParam(g.gain, settings.musicVol, 0, D, { fadeIn: Number(settings.musicFadeIn) || 0, fadeOut: Number(settings.musicFadeOut) || 0, inAt: Number(settings.musicFadeInAt) || 0, outAt: Number(settings.musicFadeOutAt) || 0, curve: settings.musicFadeCurve || 'linear' });
     // "Best quote": the song dips under each spoken line (same as the preview)
     const duck = oac.createGain();
     duck.gain.setValueAtTime(1, 0);
@@ -105,7 +124,7 @@ async function mixAudio({ plan, clips, music, settings, D }) {
         duck.gain.setTargetAtTime(1, b, 0.08);
       }
     }
-    src.connect(g).connect(duck).connect(oac.destination);
+    src.connect(g).connect(duck).connect(songChain(oac, settings, oac.destination));
     src.start(0, plan.musicStart, D + 0.1);
   }
   if (plan.mode === 'quotes') settings = { ...settings, clipVol: 1 };
@@ -118,6 +137,22 @@ async function mixAudio({ plan, clips, music, settings, D }) {
       const clip = clips[seg.clip];
       if (!clip || !clip.audioBuffer) continue;
       const d = seg.end - seg.start;
+      // the clip's own audio settings: its level, bass / treble, and fades at both ends of the cut
+      const level = clipLevel(clip);
+      if (!level) continue;
+      const ca = audioOf(clip), sg = oac.createGain();
+      // the clip's fades at both ends of each continuous stretch of it (where they start and end, their shape);
+      // a tiny ramp at every cut so it never clicks
+      {
+        const [ra, rb] = clipSpan(plan, seg.clip), F = { fadeIn: ca.fadeIn || 0, fadeOut: ca.fadeOut || 0, inAt: ca.fadeInAt, outAt: ca.fadeOutAt, curve: ca.fadeCurve };
+        const n = Math.max(8, Math.min(2000, Math.round(d * 120))), curve = new Float32Array(n);
+        for (let q = 0; q < n; q++) {
+          const t = seg.start + (q / (n - 1)) * d, edge = Math.min(1, (t - seg.start) / 0.012, (seg.end - t) / 0.012);
+          curve[q] = Math.max(0.0001, level * fadeAt(t - ra, rb - ra, F) * Math.max(0, edge));
+        }
+        try { sg.gain.setValueCurveAtTime(curve, seg.start, Math.max(0.01, d)); } catch { sg.gain.setValueAtTime(level, seg.start); }
+      }
+      sg.connect(clipChain(oac, clip, bus));
       const parts = [];
       const p = seg.profile;
       if (p.type === 'stutter') {
@@ -141,7 +176,7 @@ async function mixAudio({ plan, clips, music, settings, D }) {
         g.gain.linearRampToValueAtTime(v, pt.at + f);
         g.gain.setValueAtTime(v, pt.at + pt.dur - f);
         g.gain.linearRampToValueAtTime(0, pt.at + pt.dur);
-        s.connect(g).connect(bus);
+        s.connect(g).connect(sg);
         if (pt.buffer) s.start(pt.at, 0, pt.dur + 0.05);
         else s.start(pt.at, Math.min(pt.off, clip.audioBuffer.duration - 0.01), pt.dur + 0.05);
         s.stop(pt.at + pt.dur + 0.01);
@@ -159,7 +194,7 @@ async function post(url, body) {
   return j;
 }
 
-export async function exportEdit({ plan, clips, music, musicAnalysis, settings, name, onProgress, isCancelled, poolEl, overlay = null, hook = null }) {
+export async function exportEdit({ plan, clips, music, musicAnalysis, settings, name, onProgress, isCancelled, poolEl, overlay = null, hook = null, items = [], quickAudio = null }) {
   const [aw, ah] = settings.format.split(':').map(Number);
   const short = settings.res || 1080;
   let w, h;
@@ -182,11 +217,23 @@ export async function exportEdit({ plan, clips, music, musicAnalysis, settings, 
   if (overlay) renderer.setText(overlay, 1);
   if (hook) renderer.setHook(hook, 1);
 
+  // photos / videos you put on this take: drawn over every frame on a second canvas
+  const layers = items.length ? await loadExportOverlays(items, poolEl) : [];
+  const comp = layers.length ? document.createElement('canvas') : null;
+  if (comp) { comp.width = w; comp.height = h; }
+  const cg = comp ? comp.getContext('2d') : null;
+
   // one decoder per clip used
   const els = new Map();
   for (const seg of plan.segments) {
     if (els.has(seg.clip)) continue;
     const clip = clips[seg.clip];
+    if (clip.still) {
+      const image = new Image(); image.src = clip.url;
+      await image.decode();
+      els.set(seg.clip, image);
+      continue;
+    }
     const el = document.createElement('video');
     el.muted = true; el.preload = 'auto'; el.playsInline = true; el.crossOrigin = 'anonymous';
     el.src = clip.url;
@@ -213,10 +260,13 @@ export async function exportEdit({ plan, clips, music, musicAnalysis, settings, 
       const t = Math.min(D - 0.0005, i / fps);
       const fr = frameAt(plan, t, ctx);
       const el = els.get(fr.seg.clip);
-      await seekTo(el, fr.src);
-      renderer.setCaption(clips[fr.seg.clip], fr.src, settings, !plan.style.voiceCaptions || !!fr.seg.voice || plan.mode === 'quotes');
-      renderer.render(el, fr.U, true);
-      const vf = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
+      const clip = clips[fr.seg.clip];
+      if (!clip.still) await seekTo(el, fr.src);
+      if (plan.quick) renderer.setTimelineCaption(plan.quick, t, settings);
+      else renderer.setCaption(clip, fr.src, settings, !plan.style.voiceCaptions || !!fr.seg.voice || plan.mode === 'quotes');
+      renderer.render(el, fr.U, !clip.still || !renderer.texCache.has(el));
+      if (cg) { cg.clearRect(0, 0, w, h); cg.drawImage(canvas, 0, 0); await drawExportOverlays(cg, layers, w, h, t); }
+      const vf = new VideoFrame(comp || canvas, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
       encoder.encode(vf, { keyFrame: i % (fps * 2) === 0 });
       vf.close();
       while (encoder.encodeQueueSize > 6) await waitEvent(encoder, 'dequeue', 500);
@@ -229,13 +279,14 @@ export async function exportEdit({ plan, clips, music, musicAnalysis, settings, 
     encoder.close();
     muxer.finalize();
   } finally {
-    for (const el of els.values()) { el.pause(); el.removeAttribute('src'); el.load(); el.remove(); }
+    for (const el of els.values()) { el.pause?.(); el.removeAttribute('src'); el.load?.(); el.remove(); }
+    releaseExportOverlays(layers);
     renderer.gl.getExtension('WEBGL_lose_context')?.loseContext();
   }
 
   onProgress && onProgress({ phase: 'Mixing audio', p: 0.92 });
-  const hasAudio = (music && music.buffer && settings.musicVol > 0) || ((settings.clipVol > 0 || plan.mode === 'quotes') && clips.some((c) => c.audioBuffer));
-  const wav = hasAudio ? await mixAudio({ plan, clips, music, settings, D }) : null;
+  const hasAudio = quickAudio?.voice || quickAudio?.song || (music && music.buffer && settings.musicVol > 0) || ((settings.clipVol > 0 || plan.mode === 'quotes') && clips.some((c) => c.audioBuffer));
+  const wav = hasAudio ? await mixAudio({ plan, clips, music, settings, D, quickAudio }) : null;
 
   onProgress && onProgress({ phase: 'Saving MP4', p: 0.95 });
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);

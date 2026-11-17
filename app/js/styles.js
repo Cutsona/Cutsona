@@ -182,6 +182,17 @@ STYLES.beat = {
   cont: { card: 1 },
   look: { contrast: 1.08, sat: 1.08, vignette: 0.2, grain: 0.01 },
 };
+// Beat Sync: the plain one. Hard cuts on the beat and nothing else: no zooms, flashes, shakes, filters or effects.
+STYLES.pure = {
+  name: 'Beat Sync', color: '#9dff6a', desc: 'Just cuts on the beat. No effects, no filter',
+  cutBeats: { 1: 0.3, 2: 0.55, 4: 0.15 },
+  speed: [{ type: 'const', r: 1, p: 1 }],
+  trans: { cut: 1 }, impactTrans: { cut: 1 }, transDur: 0.1,
+  beat: { decay: 0.12 }, impact: {},
+  cont: { card: 1 },
+  look: { contrast: 1, sat: 1 },
+  pure: true,
+};
 STYLES.mosh = {
   name: 'Mosh', color: '#ff2bd6', desc: 'Datamosh smears, pixel displace, VHS tracking',
   cutBeats: { 1: 0.35, 2: 0.5, 4: 0.15 },
@@ -192,6 +203,30 @@ STYLES.mosh = {
   cont: { card: 1, bassZoom: 0.03 },
   look: { contrast: 1.15, sat: 1.25, vignette: 0.35, grain: 0.05, scan: 0.12 },
   fx: { pixdisp: 0.35, track: 0.5 },
+};
+
+// ---- next-level looks ----
+STYLES.hyper = {
+  name: 'Hyper Detail', color: '#00e5ff', desc: 'Extreme detail, crunchy color, shockwaves on the drops',
+  cutBeats: { 1: 0.35, 2: 0.5, 4: 0.15 },
+  speed: [{ type: 'const', r: 1, p: 0.7 }, { type: 'ramp', from: 1.9, to: 0.45, p: 0.3 }],
+  trans: { cut: 0.5, zoom: 0.3, whip: 0.2 }, impactTrans: { flash: 0.5, zoom: 0.5 }, transDur: 0.26,
+  beat: { punch: 0.06, shockBeat: 1, decay: 0.13 },
+  impact: { flash: 0.4, punch: 0.12 },
+  cont: { card: 1, bassZoom: 0.02 },
+  look: { contrast: 1.16, sat: 1.08, vignette: 0.38, grain: 0.012, sharp: 0.6 },
+  fx: { detail: 1, chroma: 0.55 },
+};
+STYLES.prism = {
+  name: 'Prism Rush', color: '#ff7bf2', desc: 'Prism splits, slice glitches, whip cuts',
+  cutBeats: { 1: 0.45, 2: 0.45, 4: 0.1 },
+  speed: [{ type: 'const', r: 1, p: 0.65 }, { type: 'velocity', lo: 0.5, hi: 2.2, p: 0.35 }],
+  trans: { whip: 0.45, cut: 0.35, rgb: 0.2 }, impactTrans: { flash: 0.4, glitch: 0.6 }, transDur: 0.26,
+  beat: { punch: 0.05, sliceBeat: 1, decay: 0.14 },
+  impact: { flash: 0.35, punch: 0.1, rgb: 0.02 },
+  cont: { card: 1, bassZoom: 0.03 },
+  look: { contrast: 1.15, sat: 1.3, vignette: 0.3, grain: 0.02 },
+  fx: { prism: 0.55 },
 };
 
 // ---- edits like the popular movie / TV edit accounts ----
@@ -228,6 +263,9 @@ STYLES.captionedit = {
 // Per-style details: `run` = beats per source moment (so each style cuts to new footage at its own rhythm),
 // `parts` = the style's signature effects, which can be ticked on/off on each edit card.
 const META = {
+  pure: { run: 2, parts: [] },
+  hyper: { run: 3, parts: [['detail', 'extreme detail'], ['shock', 'shockwave drops'], ['chroma', 'color boost']] },
+  prism: { run: 2, parts: [['prism', 'prism split'], ['slice', 'slice glitch'], ['whip', 'whip pans']] },
   beat: { run: 2, parts: [['punch', 'beat zoom'], ['flash', 'flash on drops']] },
   dimension: { run: 6, parts: [['tilt', '3D card tilt'], ['flips', 'flips'], ['echo', 'echo trails']] },
   velocity: { run: 4, parts: [['speed', 'speed ramps'], ['whip', 'whip pans'], ['blur', 'motion blur']] },
@@ -292,7 +330,10 @@ const PART_OFF = {
   every: (s) => { s.cutBeats = { 2: 0.6, 1: 0.25, 4: 0.15 }; s.run = 2; s.everyBeat = false; },
   fadeend: (s) => { s.endFade = 0; },
 };
-for (const k of ['bleed', 'crt', 'edge', 'sepia', 'film', 'leak', 'halftone', 'ink', 'poster', 'wave', 'pixdisp', 'track']) PART_OFF[k] = fxOff(k);
+for (const k of ['bleed', 'crt', 'edge', 'sepia', 'film', 'leak', 'halftone', 'ink', 'poster', 'wave', 'pixdisp', 'track',
+  'detail', 'chroma', 'prism', 'thermal', 'sketch', 'dither']) PART_OFF[k] = fxOff(k);
+PART_OFF.shock = (s) => { s.beat.shockBeat = 0; fxOff('shock')(s); };
+PART_OFF.slice = (s) => { s.beat.sliceBeat = 0; fxOff('slice')(s); };
 
 // EVERY effect a style uses, so each one can be ticked off: the style's signature parts first (with
 // their own names), then everything else it does — transitions, beat hits, look, built-in filters.
@@ -337,6 +378,14 @@ const COMPONENTS = [
   ['sepia', 'sepia', (s) => s.fx?.sepia],
   ['film', 'dust & scratches', (s) => s.fx?.film],
   ['leak', 'light leaks', (s) => s.fx?.leak],
+  ['detail', 'extreme detail', (s) => s.fx?.detail],
+  ['chroma', 'color boost', (s) => s.fx?.chroma],
+  ['prism', 'prism split', (s) => s.fx?.prism],
+  ['slice', 'slice glitch', (s) => s.fx?.slice || s.beat.sliceBeat],
+  ['shock', 'shockwave drops', (s) => s.beat.shockBeat],
+  ['thermal', 'thermal camera', (s) => s.fx?.thermal],
+  ['sketch', 'pencil sketch', (s) => s.fx?.sketch],
+  ['dither', '1-bit dither', (s) => s.fx?.dither],
   ['sharp', 'sharpen', (s) => s.look.sharp > 0],
   ['fadeend', 'fade to black', (s) => s.endFade > 0],
   ['grade', 'color grade', (s) => Math.abs((s.look.contrast ?? 1) - 1) > 0.02 || Math.abs((s.look.sat ?? 1) - 1) > 0.02 || s.look.tint || s.look.bright],
@@ -350,20 +399,79 @@ export function styleParts(styleId) {
   return out;
 }
 
-// A copy of a style with some of its parts switched off (used by planner + renderer so both agree)
+// Every effect in the list, whether this style uses it or not (the ones it doesn't use start unticked and
+// can be switched on: they're stored in the same list as '+key')
+export function allParts(styleId) {
+  const own = styleParts(styleId), have = new Set(own.map((p) => p[0]));
+  const out = own.map(([k, l]) => ({ key: k, label: l, native: true }));
+  for (const [k, l] of COMPONENTS) if (!have.has(k) && PART_ON[k]) { out.push({ key: k, label: l, native: false }); have.add(k); }
+  return out;
+}
+// What switching an effect ON does to a (copied) style that doesn't have it
+const addTrans = (s, t, w) => {
+  for (const o of [s.trans, s.impactTrans]) {
+    if (o.cut) o.cut = Math.max(0.2, o.cut * 0.6);
+    o[t] = Math.max(o[t] || 0, w);
+  }
+  s.transDur = Math.max(s.transDur || 0.1, 0.26);
+};
+const fxOn = (k, v) => (s) => { s.fx = { ...(s.fx || {}), [k]: Math.max(s.fx?.[k] || 0, v) }; };
+const PART_ON = {
+  speed: (s) => { s.speed = [{ type: 'velocity', lo: 0.45, hi: 2.0, p: 0.45 }, { type: 'ramp', from: 2.2, to: 0.45, p: 0.25 }, { type: 'const', r: 1, p: 0.3 }]; },
+  tilt: (s) => { s.cont.card = Math.min(s.cont.card ?? 1, 0.88); s.cont.orbit = Math.max(s.cont.orbit || 0, 0.12); s.beat.tilt = Math.max(s.beat.tilt || 0, 0.15); s.cont.round = Math.max(s.cont.round || 0, 0.025); s.cont.shadow = Math.max(s.cont.shadow || 0, 0.6); },
+  flips: (s) => addTrans(s, 'flip', 0.35),
+  whip: (s) => addTrans(s, 'whip', 0.35),
+  spin: (s) => addTrans(s, 'spin', 0.25),
+  zoomblur: (s) => addTrans(s, 'zoom', 0.35),
+  dip: (s) => addTrans(s, 'dip', 0.2),
+  blurtrans: (s) => addTrans(s, 'blur', 0.3),
+  blur: (s) => { s.noBlur = false; if (!['whip', 'zoom', 'zoomOut', 'spin', 'blur'].some((t) => s.trans[t])) addTrans(s, 'whip', 0.25); },
+  punch: (s) => { s.beat.punch = Math.max(s.beat.punch || 0, 0.07); s.impact.punch = Math.max(s.impact.punch || 0, 0.12); },
+  bass: (s) => { s.cont.bassZoom = Math.max(s.cont.bassZoom || 0, 0.035); },
+  push: (s) => { s.cont.push = Math.max(s.cont.push || 0, 0.06); },
+  flash: (s) => { s.impact.flash = Math.max(s.impact.flash || 0, 0.6); s.beat.flashDown = Math.max(s.beat.flashDown || 0, 0.2); },
+  shake: (s) => { s.beat.shake = Math.max(s.beat.shake || 0, 0.012); s.impact.shake = Math.max(s.impact.shake || 0, 0.018); },
+  rgb: (s) => { s.beat.rgb = Math.max(s.beat.rgb || 0, 0.008); s.impact.rgb = Math.max(s.impact.rgb || 0, 0.02); s.noRgb = false; },
+  glitch: (s) => { s.beat.glitch = Math.max(s.beat.glitch || 0, 0.3); s.impact.glitch = Math.max(s.impact.glitch || 0, 0.8); },
+  invert: (s) => { s.impact.invert = 1; },
+  bw: (s) => { s.impact.bw = 1; },
+  strobe: (s) => { s.beat.bwAlt = 1; },
+  echo: (s) => { s.cont.ghosts = 1; },
+  glow: (s) => { s.cont.glow = Math.max(s.cont.glow || 0, 0.5); },
+  mirror: (s) => { s.cont.mirrorChance = Math.max(s.cont.mirrorChance || 0, 0.3); },
+  hue: (s) => { s.cont.hueSpeed = Math.max(s.cont.hueSpeed || 0, 0.25); },
+  pixel: (s) => { s.beat.pixelBeat = Math.max(s.beat.pixelBeat || 0, 0.03); },
+  poster: fxOn('poster', 6),
+  fish: (s) => { s.beat.fishBeat = Math.max(s.beat.fishBeat || 0, 0.3); },
+  wave: fxOn('wave', 0.6),
+  mosh: (s) => { s.beat.moshBeat = Math.max(s.beat.moshBeat || 0, 0.8); },
+  pixdisp: fxOn('pixdisp', 0.35), track: fxOn('track', 0.5), bleed: fxOn('bleed', 1), crt: fxOn('crt', 0.5), edge: fxOn('edge', 0.8),
+  halftone: fxOn('halftone', 0.7), ink: fxOn('ink', 0.8), sepia: fxOn('sepia', 0.8), film: fxOn('film', 1), leak: fxOn('leak', 0.4),
+  sharp: (s) => { s.look = { ...s.look, sharp: Math.max(s.look.sharp || 0, 0.8) }; },
+  detail: fxOn('detail', 1), chroma: fxOn('chroma', 0.6), prism: fxOn('prism', 0.55), thermal: fxOn('thermal', 1), sketch: fxOn('sketch', 1), dither: fxOn('dither', 1),
+  slice: (s) => { s.beat.sliceBeat = Math.max(s.beat.sliceBeat || 0, 1); },
+  shock: (s) => { s.beat.shockBeat = Math.max(s.beat.shockBeat || 0, 1); },
+  fadeend: (s) => { s.endFade = Math.max(s.endFade || 0, 0.8); },
+  grade: (s) => { s.look = { ...s.look, contrast: 1.2, sat: 1.25 }; },
+  vignette: (s) => { s.look = { ...s.look, vignette: Math.max(s.look.vignette || 0, 0.45) }; },
+  grain: (s) => { s.look = { ...s.look, grain: Math.max(s.look.grain || 0, 0.05) }; },
+};
+// A copy of a style with some of its parts switched off ('key') or added ('+key'); used by planner + renderer so both agree
 export function styleWith(styleId, off = []) {
   const base = STYLES[styleId] || STYLES.dimension;
   if (!off || !off.length) return base;
   const s = JSON.parse(JSON.stringify(base));
+  for (const k of off) if (k[0] === '+' && PART_ON[k.slice(1)]) PART_ON[k.slice(1)](s);
   for (const k of off) if (PART_OFF[k]) PART_OFF[k](s);
   return s;
 }
 
-export const DEFAULT_LINEUP = ['movie', 'captionedit', 'beat', 'velocity'];
+// take 1 is always the plain Beat Sync edit; the others are styled
+export const DEFAULT_LINEUP = ['pure', 'movie', 'captionedit', 'velocity'];
 
 // Shader effects that styles, filters and extra effects can switch on
 export const FX_KEYS = ['pixel', 'poster', 'fish', 'wave', 'crt', 'kaleido', 'bleed', 'edge', 'ink', 'halftone', 'duo', 'sepia', 'leak', 'film', 'split',
-  'pixdisp', 'print', 'stars', 'mosh', 'track'];
+  'pixdisp', 'print', 'stars', 'mosh', 'track', 'detail', 'thermal', 'sketch', 'dither', 'prism', 'slice', 'shock', 'chroma'];
 
 // Filters = a color grade + optional effects, laid over any style
 export const FILTERS = {
@@ -386,7 +494,34 @@ export const FILTERS = {
   pixel: { name: '8-bit', sw: ['#2b2bff', '#5dff9a'], look: { sat: 1.3 }, fx: { pixel: 0.012, poster: 5 } },
   sepia: { name: 'Sepia', sw: ['#4a3420', '#d8b98a'], look: { contrast: 1.05, vignette: 0.45 }, fx: { sepia: 0.9 } },
   psych: { name: 'Psychedelic', sw: ['#ff00c8', '#00ffa2'], look: { sat: 1.6 }, hueSpin: 0.8 },
+  // next-level looks
+  detail: { name: 'Extreme detail', sw: ['#0b0f14', '#e8f6ff'], look: { contrast: 1.12, sat: 1.1, sharp: 1.0, vignette: 0.3 }, fx: { detail: 1, chroma: 0.3 } },
+  crisp: { name: '4K crisp', sw: ['#1d2a38', '#bfe9ff'], look: { contrast: 1.08, sat: 1.12, sharp: 1.2 }, fx: { detail: 0.5 } },
+  drama: { name: 'Dramatic HDR', sw: ['#141414', '#d9a75a'], look: { contrast: 1.28, sat: 0.92, vignette: 0.55, grain: 0.02 }, fx: { detail: 0.85, split: 0.6 } },
+  chroma: { name: 'Color boost', sw: ['#ff1f5a', '#1fd1ff'], look: { contrast: 1.12 }, fx: { chroma: 1 } },
+  bleach: { name: 'Bleach bypass', sw: ['#2b2f33', '#c9cfd4'], look: { contrast: 1.38, sat: 0.45, vignette: 0.35 }, fx: { detail: 0.4 } },
+  anime: { name: 'Anime cel', sw: ['#ff7ab6', '#7ae1ff'], look: { contrast: 1.15, sat: 1.35, bright: 0.02 }, fx: { poster: 8, ink: 0.55, detail: 0.3 } },
+  thermal: { name: 'Thermal', sw: ['#3a0060', '#ffd000'], look: { contrast: 1.1 }, fx: { thermal: 1 } },
+  night: { name: 'Night vision', sw: ['#001400', '#7dff7a'], look: { contrast: 1.3, vignette: 0.75, grain: 0.09, scan: 0.18, bright: 0.04 }, fx: { duo: 1, duoA: [0, 0.04, 0], duoB: [0.55, 1, 0.5] } },
+  xray: { name: 'X-ray', sw: ['#001018', '#d8f6ff'], look: { contrast: 1.25 }, fx: { duo: 1, duoA: [0.85, 0.97, 1], duoB: [0, 0.04, 0.1], edge: 0.25 } },
+  sketch: { name: 'Pencil sketch', sw: ['#f3efe6', '#3a3a3a'], look: { contrast: 1.05, sat: 0 }, fx: { sketch: 1 } },
+  dither: { name: '1-bit dither', sw: ['#0f1219', '#dbeecc'], look: { contrast: 1.2 }, fx: { dither: 1 } },
+  prism: { name: 'Prism', sw: ['#ff3d6e', '#3dd8ff'], look: { contrast: 1.1, sat: 1.2 }, fx: { prism: 0.6 } },
+  // film looks: open-source film emulations (HaldCLUTs from the G'MIC / RawTherapee collection, CC BY-SA 4.0),
+  // downloaded the first time you pick one
+  film_kodachrome: { name: 'Film: Kodachrome 64', sw: ['#7a2a14', '#f2c14e'], lut: 'kodachrome', look: { grain: 0.03 } },
+  film_velvia: { name: 'Film: Velvia 50', sw: ['#0d4f8b', '#e9483b'], lut: 'velvia', look: { grain: 0.02 } },
+  film_portra: { name: 'Film: Portra 400', sw: ['#b98466', '#f3e1c7'], lut: 'portra', look: { grain: 0.035 } },
+  film_superia: { name: 'Film: Superia 400', sw: ['#2e6b4a', '#e8d6a8'], lut: 'superia', look: { grain: 0.04 } },
+  film_polaroid: { name: 'Film: Polaroid', sw: ['#6f8d8a', '#f0e2c0'], lut: 'polaroid', look: { grain: 0.03, vignette: 0.25 } },
+  film_cinema: { name: 'Film: Cinema print 2383', sw: ['#0f2a33', '#e8a35c'], lut: 'cine2383', look: { vignette: 0.2, grain: 0.02 } },
+  film_fuji_print: { name: 'Film: Fuji print 3510', sw: ['#183a36', '#d9c48f'], lut: 'fuji3510', look: { vignette: 0.18, grain: 0.02 } },
+  film_trix: { name: 'Film: Tri-X 400 B&W', sw: ['#111', '#e6e6e6'], lut: 'trix', look: { grain: 0.07, vignette: 0.35 } },
+  film_hp5: { name: 'Film: HP5 B&W', sw: ['#1b1b1b', '#d8d8d8'], lut: 'hp5', look: { grain: 0.05, vignette: 0.3 } },
+  film_anime: { name: 'Film: Anime colors', sw: ['#ff7ab6', '#7ae1ff'], lut: 'animelut' },
 };
+
+export const VIDEO_FORMATS = ['9:16', '4:5', '1:1', '16:9', '3:4', '4:3', '2:3', '21:9'];
 
 // Extra effects you can stack on any edit
 export const EXTRAS = [
@@ -397,6 +532,8 @@ export const EXTRAS = [
   ['hue', 'Color cycle'], ['glow', 'Glow'], ['vignette', 'Dark corners'],
   // animated "Nexus"-style filters: they move on their own, even on still footage
   ['pixdisplace', 'PixDisplace'], ['print', 'PrintAnimate'], ['stars', 'Stars'], ['datamosh', 'Datamosh'],
+  // next-level
+  ['detail', 'Extreme detail'], ['chroma', 'Color boost'], ['shockwave', 'Shockwave drops'], ['slices', 'Slice glitch'], ['prism', 'Prism split'],
 ];
 // the ones that are animated on their own (shown with a ✦ in the effect list)
-export const ANIMATED_FX = new Set(['pixdisplace', 'print', 'stars', 'datamosh', 'vhs']);
+export const ANIMATED_FX = new Set(['pixdisplace', 'print', 'stars', 'datamosh', 'vhs', 'slices']);

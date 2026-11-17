@@ -7,6 +7,7 @@ const os = require('os');
 const https = require('https');
 const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
+const { pipeline } = require('stream');
 
 const ROOT = __dirname;
 // Where Cutsona keeps what it makes and downloads. A copy from GitHub keeps it all in its own folder; the
@@ -42,13 +43,13 @@ function usableDir(d) {
 let EXPORT_DIR = usableDir(appSettings.exportDir) || DEFAULT_EXPORT_DIR;
 function saveAppSettings() { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(appSettings, null, 2)); }
 // The system's own "choose a folder" window (Windows / macOS). Resolves the folder, or null when cancelled.
-function pickFolder(start) {
+function pickFolder(start, desc = 'Where should Cutsona save your finished videos?') {
   return new Promise((resolve, reject) => {
     let cmd, args;
     if (process.platform === 'win32') {
       // the start folder comes in through an environment variable, never pasted into the script
       const ps = "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog;"
-        + " $f.Description = 'Where should Cutsona save your finished videos?'; $f.ShowNewFolderButton = $true;"
+        + " $f.Description = $env:CUTSONA_DESC; $f.ShowNewFolderButton = $true;"
         + " if ($env:CUTSONA_START -and (Test-Path -LiteralPath $env:CUTSONA_START)) { $f.SelectedPath = $env:CUTSONA_START };"
         + " $o = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false };"
         + " if ($f.ShowDialog($o) -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($f.SelectedPath) }";
@@ -57,7 +58,7 @@ function pickFolder(start) {
       cmd = 'osascript'; args = ['-e', 'POSIX path of (choose folder with prompt "Where should Cutsona save your finished videos?")'];
     } else return reject(new Error('Type the folder path instead (no folder picker on this system).'));
     let out = '';
-    const p = spawn(cmd, args, { windowsHide: false, env: { ...process.env, CUTSONA_START: start || '' } });
+    const p = spawn(cmd, args, { windowsHide: false, env: { ...process.env, CUTSONA_START: start || '', CUTSONA_DESC: desc } });
     p.stdout.on('data', (d) => { out += d; });
     p.on('error', reject);
     p.on('close', () => resolve(out.trim().replace(/[\\/]$/, '') || null));
@@ -110,6 +111,44 @@ function ensureVision() {
     visionReady.catch(() => { visionReady = null; });
   }
   return visionReady;
+}
+
+// ---- smarter clips: open-source models, downloaded once on first use ----
+// YAMNet (Google, Apache 2.0) through MediaPipe Tasks Audio: hears laughter, cheering, applause, screaming, gasps,
+// explosions in a clip, so highlights and edits land on the moments people react to.
+// VADER (C.J. Hutto, MIT): how strongly each word feels, so the most emotional lines rank higher as quotes.
+const MPA = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-audio@0.10.14';
+const SOUND_FILES = [
+  ['audio/audio_bundle.mjs', `${MPA}/audio_bundle.mjs`],
+  ['audio/wasm/audio_wasm_internal.js', `${MPA}/wasm/audio_wasm_internal.js`],
+  ['audio/wasm/audio_wasm_internal.wasm', `${MPA}/wasm/audio_wasm_internal.wasm`],
+  ['audio/yamnet.tflite', 'https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite'],
+  ['text/vader_lexicon.txt', 'https://raw.githubusercontent.com/cjhutto/vaderSentiment/master/vaderSentiment/vader_lexicon.txt'],
+];
+// MediaPipe Face Landmarker (Google, Apache 2.0): a face's expression (mouth open, smile, eyebrows up, wide eyes),
+// so a streamer's silent reactions count as moments too
+const FACE_FILES = [['face_landmarker.task', 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task']];
+// Film looks: open-source HaldCLUT film emulations (G'MIC / RawTherapee film simulation collection, Pat David and
+// contributors, CC BY-SA 4.0), downloaded the first time a look is used
+const LUTS = { kodachrome: 'colorslide/clut/kodak_kodachrome_64', velvia: 'colorslide/clut/fuji_velvia_50', portra: 'negative_new/clut/kodak_portra_400',
+  superia: 'negative_old/clut/fuji_superia_400', polaroid: 'instant_consumer/clut/polaroid_px-70', trix: 'bw/clut/kodak_tri-x_400',
+  hp5: 'bw/clut/ilford_hp_5_plus_400', cine2383: 'print/clut/kodak_2383_constlclip', fuji3510: 'print/clut/fuji_3510_constlclip', animelut: 'creative/clut/anime' };
+const modelJobs = new Map();
+function ensureModels(list, key) {
+  if (!modelJobs.has(key)) {
+    const p = (async () => {
+      for (const [rel, url] of list) {
+        const dest = path.join(VISION_DIR, rel);
+        if (fs.existsSync(dest) && fs.statSync(dest).size > 1000) continue;
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        await curlFile(url, dest + '.part');
+        fs.renameSync(dest + '.part', dest);
+      }
+    })();
+    modelJobs.set(key, p);
+    p.catch(() => modelJobs.delete(key));
+  }
+  return modelJobs.get(key);
 }
 
 // FFmpeg: the copy the desktop app ships with (CUTSONA_FFMPEG), else one in bin/, else the one on PATH
@@ -231,6 +270,7 @@ function saveBody(req, dest) {
 // Static file server with HTTP Range support (needed for smooth video seeking)
 function serveFile(req, res, file) {
   fs.stat(file, (err, st) => {
+    if (res.destroyed) return;
     if (err || !st.isFile()) { res.writeHead(404); return res.end('Not found'); }
     const type = MIME[path.extname(file).toLowerCase()] || 'application/octet-stream';
     const range = req.headers.range;
@@ -245,11 +285,12 @@ function serveFile(req, res, file) {
         return res.end();
       }
       res.writeHead(206, { ...headers, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 });
-      fs.createReadStream(file, { start, end }).pipe(res);
+      if (req.method === 'HEAD') return res.end();
+      pipeline(fs.createReadStream(file, { start, end }), res, () => {});
     } else {
       res.writeHead(200, { ...headers, 'Content-Length': st.size });
       if (req.method === 'HEAD') return res.end();
-      fs.createReadStream(file).pipe(res);
+      pipeline(fs.createReadStream(file), res, () => {});
     }
   });
 }
@@ -326,9 +367,33 @@ function runYtdlp(args, onLine) {
   });
 }
 
-function curl(url, { accept = 'text/html', headers = {}, body = null } = {}) {
+// A YouTube (or other site) download that got refused (HTTP 403, "unable to download video data", a format that
+// vanished): clear yt-dlp's cached player data and try other YouTube player clients before giving up.
+// cleanup() runs before every new try (delete the half-written file).
+const REFUSED = /403|forbidden|unable to download video data|requested format is not available|fragment|timed out|connection reset|incomplete|sign in to confirm|po token|needs to be reloaded|not available on this app|no video formats|precondition/i;
+let ytCacheCleared = 0;
+async function runYtdlpSure(args, url, onLine, { cleanup = () => {}, onRetry = () => {}, mobileFirst = false } = {}) {
+  let tries = [[], ['--extractor-args', 'youtube:player_client=mweb,android_vr'], ['--extractor-args', 'youtube:player_client=tv,web_safari'], ['--extractor-args', 'youtube:player_client=web_embedded,ios']];
+  if (mobileFirst) tries = [tries[1], tries[0], ...tries.slice(2)]; // (YouTube refuses the default client's small files most often)
+  let last = null;
+  for (let k = 0; k < tries.length; k++) {
+    try { return await runYtdlp([...args, ...tries[k], '--', url], onLine); }
+    catch (e) {
+      last = e;
+      if (!REFUSED.test(e.message)) throw e;
+      console.error(`yt-dlp try ${k + 1} refused:`, e.message);
+      cleanup(); onRetry(k + 1);
+      // once in a while: drop the cached player data (a stale one makes every link 403)
+      if (k === 0 && Date.now() - ytCacheCleared > 60000) { ytCacheCleared = Date.now(); await runYtdlp(['--rm-cache-dir']).catch(() => {}); }
+      await sleep(800 + k * 700);
+    }
+  }
+  throw last;
+}
+
+function curl(url, { accept = 'text/html', headers = {}, body = null, maxTime = 25 } = {}) {
   return new Promise((resolve, reject) => {
-    const args = ['-s', '-L', '--compressed', '--max-time', '25', '-A', UA, '-H', `Accept: ${accept}`];
+    const args = ['-s', '-L', '--compressed', '--max-time', String(maxTime), '-A', UA, '-H', `Accept: ${accept}`];
     for (const [k, v] of Object.entries(headers)) args.push('-H', `${k}: ${v}`);
     if (body != null) args.push('-X', 'POST', '--data-binary', '@-');
     args.push('-w', '\n%{http_code}', url);
@@ -406,7 +471,21 @@ async function setupSpeech() {
     const venv = path.join(BIN_DIR, 'speech');
     const py = path.join(venv, process.platform === 'win32' ? 'Scripts\\python.exe' : 'bin/python');
     if (!fs.existsSync(py)) {
-      const base = await findPython();
+      let base = await findPython();
+      // no Python on this PC: Cutsona brings its own (a small standalone Python, only for the speech tools)
+      if (!base && process.platform === 'win32') {
+        const dir = path.join(BIN_DIR, 'python'), exe = path.join(dir, 'python', 'python.exe');
+        if (!fs.existsSync(exe)) {
+          speechJob.phase = 'Downloading Python for the speech tools (about 40 MB)';
+          fs.mkdirSync(dir, { recursive: true });
+          const tgz = path.join(dir, 'python.tar.gz');
+          await download('https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.12.7%2B20241016-x86_64-pc-windows-msvc-install_only.tar.gz', tgz);
+          speechJob.phase = 'Unpacking Python';
+          await runQuiet('tar', ['-xzf', tgz, '-C', dir], 5 * 60000);
+          try { fs.unlinkSync(tgz); } catch {}
+        }
+        if (fs.existsSync(exe)) base = exe;
+      }
       if (!base) { speechJob.needPython = true; throw new Error('Cutsona needs Python 3.10, 3.11 or 3.12 for speech. Install it from python.org, then press Set up again.'); }
       speechJob.phase = 'Making a place for the speech tools';
       await runQuiet(base, ['-m', 'venv', venv]);
@@ -436,6 +515,8 @@ function readJsonBig(req, limit) {
 // a clip / song reference: { cache: '/cache/x.mp4' } (copied into projects/media now) or { media: 'm_x.mp4' } (already there)
 function keepMedia(src) {
   if (!src || typeof src !== 'object') return null;
+  if (src.quick && docs.projectMedia(src.quick)) return { quick: { id: src.quick.id, index: src.quick.index } };
+  if (typeof src.export === 'string' && src.export === path.basename(src.export) && within(EXPORT_DIR, src.export) && fs.existsSync(within(EXPORT_DIR, src.export))) return { export: src.export };
   if (src.media && within(MEDIA_DIR, src.media) && fs.existsSync(path.join(MEDIA_DIR, path.basename(src.media)))) return { media: path.basename(src.media) };
   if (typeof src.cache === 'string' && src.cache.startsWith('/cache/')) {
     const from = within(CACHE_DIR, src.cache.slice(7));
@@ -447,6 +528,8 @@ function keepMedia(src) {
   return null;
 }
 function mediaToCache(src) {
+  if (src?.quick) return docs.projectMedia(src.quick);
+  if (typeof src?.export === 'string' && src.export === path.basename(src.export) && within(EXPORT_DIR, src.export) && fs.existsSync(within(EXPORT_DIR, src.export))) return `/exports/${encodeURIComponent(src.export)}`;
   const name = src && src.media && path.basename(String(src.media));
   const from = name && within(MEDIA_DIR, name);
   if (!from || !fs.existsSync(from)) return null;
@@ -500,7 +583,7 @@ const SOURCE_CHECKS = [
 ];
 async function checkSource([key, full, , params, needsKey]) {
   const name = full.replace(/\s*\(.*\)$/, ''); // "Yarn (movie quotes)" -> "Yarn" in the sentences
-  if (needsKey && !config[needsKey]) return { key, name: full, state: 'setup', note: `Needs your free ${name} API key: add it in Find clips → Free stock.` };
+  if (needsKey && !config[needsKey]) return { key, name: full, state: 'setup', note: `Needs your free ${name} API key: add it in Settings → API keys.` };
   const t0 = Date.now();
   try {
     const items = await Promise.race([
@@ -544,6 +627,8 @@ function saveConfig() { fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, nul
 const TW_CLIENT = 'kimne78kx3ncx6brgo4mv6wki5h1ko';
 const TW_PERIOD = { day: 'LAST_DAY', week: 'LAST_WEEK', month: 'LAST_MONTH', all: 'ALL_TIME' };
 const TW_FIELDS = 'slug title viewCount durationSeconds thumbnailURL createdAt broadcaster{login displayName} game{displayName}';
+const TW_CLIP_LIMIT = 100;
+const TW_CLIPS_UNAVAILABLE = 'Twitch couldn’t load clips right now. Try again in a moment.';
 async function twitchGql(query, variables) {
   const text = await curl('https://gql.twitch.tv/gql', { accept: 'application/json', headers: { 'Client-Id': TW_CLIENT, 'Content-Type': 'application/json' }, body: JSON.stringify({ query, variables }) });
   const j = JSON.parse(text);
@@ -551,16 +636,40 @@ async function twitchGql(query, variables) {
   return j.data || {};
 }
 const mapTwitch = (n) => ({ id: n.slug, source: 'twitch', url: `https://clips.twitch.tv/${n.slug}`, title: n.title, channel: (n.broadcaster && (n.broadcaster.displayName || n.broadcaster.login)) || '',
-  duration: n.durationSeconds, views: n.viewCount, thumb: n.thumbnailURL, game: n.game && n.game.displayName });
+  duration: n.durationSeconds, views: n.viewCount, thumb: n.thumbnailURL, game: n.game && n.game.displayName, at: Date.parse(n.createdAt) || undefined });
+// Twitch sometimes answers with part of the data missing (a busy service): ask again, twice, before giving up
+async function twitchGqlSure(query, variables, pick) {
+  let d = null;
+  for (let k = 0; k < 3; k++) {
+    try { d = await twitchGql(query, variables); } catch (e) { if (k === 2) throw e; d = null; }
+    if (d && pick(d) != null) return d;
+    if (k < 2) await sleep(350 * (k + 1));
+  }
+  return d || {};
+}
+function twitchClipPage(edges, newest, page, size) {
+  const clips = edges.filter((e) => e?.node).map((e) => mapTwitch(e.node));
+  if (newest) clips.sort((a, b) => (b.at || 0) - (a.at || 0));
+  return clips.slice((page - 1) * size, page * size);
+}
+function twitchFinderQuery(query, variables, pick, newest) {
+  const load = () => twitchGqlSure(query, variables, pick).then((data) => {
+    if (pick(data) == null) throw new Error(TW_CLIPS_UNAVAILABLE);
+    return data;
+  });
+  // Use the same result set on every Newest page. Twitch currently serves these feeds in view order.
+  return newest ? cached(JSON.stringify([query, variables]), load) : load();
+}
+// the categories a typed name could mean ("gta" -> Grand Theft Auto V, GTA: La Heist, ...), best match first
 const twGameNames = new Map();
-async function twitchGameName(q) {
+async function twitchGameNames(q) {
   const k = q.toLowerCase();
   if (twGameNames.has(k)) return twGameNames.get(k);
-  const d = await twitchGql('query($q:String!){searchCategories(query:$q, first:1){edges{node{name}}}}', { q });
-  const name = d.searchCategories && d.searchCategories.edges[0] && d.searchCategories.edges[0].node.name;
-  if (!name) throw new Error(`No Twitch category found for “${q}”.`);
-  twGameNames.set(k, name);
-  return name;
+  const d = await twitchGqlSure('query($q:String!){searchCategories(query:$q, first:5){edges{node{name}}}}', { q }, (x) => x.searchCategories?.edges);
+  const names = (d.searchCategories?.edges || []).map((e) => e?.node?.name).filter(Boolean);
+  if (!names.length) throw new Error(`No Twitch category found for “${q}”.`);
+  twGameNames.set(k, names);
+  return names;
 }
 
 // a Twitch clip's own MP4 (a signed link, good for a while): the small one for hover previews
@@ -578,6 +687,315 @@ async function twitchClipMp4(slug, big) {
   clipLinks.set(key, { t: Date.now(), u });
   return u;
 }
+// ---- song waves: download the preview, decode it small with ffmpeg, keep the loudest point of each slice ----
+const peakCache = new Map();
+function songPeaks(u) {
+  return new Promise((resolve, reject) => {
+    const cu = spawn(process.platform === 'win32' ? 'curl.exe' : 'curl', ['-s', '-L', '--max-time', '60', '--max-filesize', '40000000', '-A', UA, u], { windowsHide: true });
+    const ff = spawn(FFMPEG, ['-v', 'error', '-i', 'pipe:0', '-t', '600', '-ac', '1', '-ar', '4000', '-f', 's16le', 'pipe:1'], { windowsHide: true });
+    cu.stdout.pipe(ff.stdin);
+    ff.stdin.on('error', () => {}); cu.on('error', reject); ff.on('error', reject);
+    const chunks = [];
+    ff.stdout.on('data', (d) => chunks.push(d));
+    ff.on('close', () => {
+      const b = Buffer.concat(chunks), n = Math.floor(b.length / 2);
+      if (n < 400) return reject(new Error('Could not read that song.'));
+      const N = 400, step = n / N, out = [];
+      for (let k = 0; k < N; k++) { let m = 0; for (let j = Math.floor(k * step); j < Math.floor((k + 1) * step); j++) m = Math.max(m, Math.abs(b.readInt16LE(j * 2))); out.push(m); }
+      const mx = Math.max(...out, 1);
+      resolve(out.map((x) => Math.round(Math.pow(x / mx, 0.8) * 1000) / 1000));
+    });
+  });
+}
+// ---- own player + transcripts for any link (yt-dlp) ----
+const streamLinks = new Map();
+async function directStream(u, audioOnly = false) { return (await streamInfo(u, audioOnly)).url; }
+// the stream's address AND the request headers it has to be fetched with (YouTube's links refuse other browsers)
+async function streamInfo(u, audioOnly = false) {
+  const key = (audioOnly ? 'a:' : 'v:') + u, c = streamLinks.get(key);
+  if (c && Date.now() - c.t < 30 * 60e3) return c.info;
+  // already a file the page can play (stock footage, a song preview)
+  if (/\.(mp4|webm|m4a|mp3|ogg|wav)(\?|$)/i.test(new URL(u).pathname)) return { url: u, headers: {} };
+  await ensureYtdlp();
+  // one file with picture and sound (browsers can't join separate streams); 720p or less keeps it quick.
+  // Songs: the sound alone (smaller, and it exists even when a combined file doesn't)
+  const fmt = audioOnly ? 'bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/18/bestaudio/best'
+    : 'best[height<=720][vcodec!=none][acodec!=none][ext=mp4]/18/best[vcodec!=none][acodec!=none]';
+  let j;
+  try { j = JSON.parse(await runYtdlp(['-j', '--no-playlist', '--no-warnings', '-f', fmt, u])); }
+  catch (e) { throw new Error(playError(e.message)); }
+  const link = j.url || j.requested_formats?.[0]?.url;
+  if (!/^https?:\/\//.test(link || '')) throw new Error('No playable stream for that video.');
+  const info = { url: link, headers: j.http_headers || j.requested_formats?.[0]?.http_headers || {} };
+  if (streamLinks.size > 200) streamLinks.clear();
+  streamLinks.set(key, { t: Date.now(), info });
+  return info;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const previews = new Map();
+// Where the webcam box is: in frames from all through the video, the edge between the webcam and the game is
+// there in nearly every frame, at the same place (the game behind it keeps changing). From the face outwards, the
+// first line like that on each side is the box's side; no line = the box runs to the edge of the picture.
+const camRects = new Map();
+// The webcam box from the lasting edges: the long straight lines (columns / rows) that stay put in nearly every
+// frame, combined into the rectangle around the streamer whose sides are best covered by them. A side on the edge of
+// the picture needs no line. Works for webcams with or without a border, in any corner.
+function findRect(ex, ey, W, H, [fx, fy, fw, fh]) {
+  const TH = 0.5, at = (a, i) => a[i] || 0;
+  const vE = (x, y) => Math.max(at(ex, y * W + x), x > 0 ? at(ex, y * W + x - 1) : 0); // edge between columns x-1 | x
+  const hE = (x, y) => Math.max(at(ey, y * W + x), y > 0 ? at(ey, (y - 1) * W + x) : 0); // edge between rows y-1 / y
+  // the longest straight run of a lasting edge in each column / row (gaps of 2 px allowed)
+  const longest = (n, get) => { let best = 0, run = 0, gap = 0; for (let k = 0; k < n; k++) { if (get(k) >= TH) { run += 1 + gap; gap = 0; best = Math.max(best, run); } else if (run && gap < 2) gap++; else { run = 0; gap = 0; } } return best; };
+  const cols = [], rows = [];
+  for (let x = 2; x < W - 2; x++) { const L = longest(H, (y) => vE(x, y)); if (L >= H * 0.12) cols.push({ v: x, L }); }
+  for (let y = 2; y < H - 2; y++) { const L = longest(W, (x) => hE(x, y)); if (L >= W * 0.07) rows.push({ v: y, L }); }
+  // keep the strongest line of each little neighbourhood, at most 18 of each
+  const thin = (list) => { list.sort((a, b) => b.L - a.L); const out = []; for (const c of list) { if (out.some((o) => Math.abs(o.v - c.v) <= 2)) continue; out.push(c); if (out.length >= 18) break; } return out.map((c) => c.v); };
+  const X = [0, ...thin(cols), W].sort((p, q) => p - q), Y = [0, ...thin(rows), H].sort((p, q) => p - q);
+  const sideV = (x, y0, y1) => { if (x <= 0 || x >= W) return null; let k = 0; for (let y = y0; y < y1; y++) if (vE(x, y) >= TH || vE(Math.min(W - 1, x + 1), y) >= TH) k++; return k / Math.max(1, y1 - y0); };
+  const sideH = (y, x0, x1) => { if (y <= 0 || y >= H) return null; let k = 0; for (let x = x0; x < x1; x++) if (hE(x, y) >= TH || hE(x, Math.min(H - 1, y + 1)) >= TH) k++; return k / Math.max(1, x1 - x0); };
+  const fL = (fx - fw / 2) * W, fR = (fx + fw / 2) * W, fT = (fy - fh / 2) * H, fB = (fy + fh / 2) * H, fcx = fx * W;
+  let best = null;
+  for (let a = 0; a < X.length; a++) for (let b = a + 1; b < X.length; b++) {
+    const L = X[a], R = X[b], w = R - L;
+    if (w < W * 0.08 || w > W * 0.75) continue;
+    if (fcx < L - 2 || fcx > R + 2) continue; // the streamer is in it
+    for (let c = 0; c < Y.length; c++) for (let d = c + 1; d < Y.length; d++) {
+      const T = Y[c], B = Y[d], h = B - T;
+      if (h < H * 0.12 || h > H * 0.8 || (w * h) / (W * H) > 0.45) continue;
+      const shape = (w * 16 / W) / (h * 9 / H); if (shape < 0.45 || shape > 3.2) continue;
+      if (Math.min(B, fB) - Math.max(T, fT) < Math.min(h, fB - fT) * 0.2) continue; // overlaps where the person is
+      const s = [sideV(L, T, B), sideV(R, T, B), sideH(T, L, R), sideH(B, L, R)].filter((v) => v != null);
+      if (s.length < 2 || Math.min(...s) < 0.6 || s.reduce((p, q) => p + q, 0) / s.length < 0.8) continue;
+      const score = s.reduce((p, q) => p + q, 0) / s.length + 0.06 * s.length;
+      if (!best || score > best.score + 1e-6 || (Math.abs(score - best.score) < 1e-6 && w * h < best.w * best.h)) best = { L, R, T, B, w, h, score, sides: s.map((v) => +v.toFixed(2)) };
+    }
+  }
+  return best;
+}
+function camRect(file, [fx, fy, fw, fh]) {
+  const key = `${file}|${[fx, fy, fw, fh].map((v) => v.toFixed(3)).join(',')}`;
+  if (camRects.has(key)) return camRects.get(key);
+  const W = 384, H = 216, N = W * H;
+  // every 45th frame, small and grey (newer FFmpeg builds only know -fps_mode, older ones only -vsync)
+  const grab = (sync) => new Promise((resolve, reject) => {
+    const p = spawn(FFMPEG, ['-v', 'error', '-i', file, '-vf', `select='not(mod(n\,45))',scale=${W}:${H}:flags=area,format=gray`, sync, 'vfr', '-frames:v', '40', '-f', 'rawvideo', 'pipe:1'], { windowsHide: true });
+    const chunks = []; let err = '';
+    p.stdout.on('data', (d) => chunks.push(d)); p.stderr.on('data', (d) => { err += d; }); p.on('error', reject);
+    p.on('close', () => resolve({ buf: Buffer.concat(chunks), err }));
+  });
+  const task = (async () => {
+    let r = await grab('-fps_mode');
+    if (r.buf.length < N * 4 && /fps_mode|Unrecognized option|Option not found/i.test(r.err)) r = await grab('-vsync');
+    return r.buf;
+  })().then((buf) => new Promise((resolve) => {
+    {
+      const n = Math.floor(buf.length / N);
+      if (n < 4) return resolve(null);
+      const ex = new Float32Array(N), ey = new Float32Array(N);
+      for (let k = 0; k < n; k++) {
+        const o = k * N;
+        for (let y = 0; y < H - 1; y++) for (let x = 0; x < W - 1; x++) {
+          const i = y * W + x, v = buf[o + i];
+          if (Math.abs(buf[o + i + 1] - v) > 14) ex[i]++;
+          if (Math.abs(buf[o + i + W] - v) > 14) ey[i]++;
+        }
+      }
+      for (let i = 0; i < N; i++) { ex[i] /= n; ey[i] /= n; }
+      const rb = findRect(ex, ey, W, H, [fx, fy, fw, fh]);
+      if (rb) return resolve([rb.L / W, rb.T / H, rb.w / W, rb.h / H].map((v) => +v.toFixed(4)));
+      // (no clear rectangle: from the face outwards, the first lasting line on each side)
+      const cx = fx * W, cy = fy * H, hw = Math.max(6, fw * W / 2), hh = Math.max(6, fh * H / 2);
+      // how much of a column (x) between rows y0..y1 is a lasting edge; same for a row
+      const colScore = (x, y0, y1) => { let s = 0, c = 0; for (let y = Math.max(0, y0); y <= Math.min(H - 2, y1); y++) { s += Math.max(ex[y * W + x], x > 0 ? ex[y * W + x - 1] : 0); c++; } return c ? s / c : 0; };
+      const rowScore = (y, x0, x1) => { let s = 0, c = 0; for (let x = Math.max(0, x0); x <= Math.min(W - 2, x1); x++) { s += Math.max(ey[y * W + x], y > 0 ? ey[(y - 1) * W + x] : 0); c++; } return c ? s / c : 0; };
+      const TH = 0.55, y0 = Math.round(cy - hh), y1 = Math.round(cy + hh), x0 = Math.round(cx - hw), x1 = Math.round(cx + hw);
+      const find = (from, to, step, score) => { for (let v = from; step > 0 ? v <= to : v >= to; v += step) if (score(v) >= TH) return v; return null; };
+      // (start a little outside the face; a box found running off the picture starts inside it)
+      const sx = (v) => Math.max(1, Math.min(W - 2, Math.round(v))), sy = (v) => Math.max(1, Math.min(H - 2, Math.round(v)));
+      let L = find(sx(cx - hw * 0.7), 1, -1, (x) => colScore(x, y0, y1));
+      let R = find(sx(cx + hw * 0.7), W - 2, 1, (x) => colScore(x, y0, y1));
+      L = L == null ? 0 : L + 1; R = R == null ? W : R + 1;
+      let T = find(sy(Math.min(cy - hh * 0.7, cy)), 1, -1, (y) => rowScore(y, Math.max(L, x0), Math.min(R - 1, x1)));
+      // (a whole person found, not just a face: their box can run past the webcam's bottom, so look from their middle)
+      let B = find(sy(hh > H * 0.15 ? cy - hh * 0.2 : cy + hh * 0.7), H - 2, 1, (y) => rowScore(y, Math.max(L, x0), Math.min(R - 1, x1)));
+      T = T == null ? 0 : T + 1; B = B == null ? H : B + 1;
+      const box = [L / W, T / H, (R - L) / W, (B - T) / H];
+      // a believable webcam box: around the face, not most of the picture, not a sliver
+      const visH = Math.min(1, fy + fh / 2) - Math.max(0, fy - fh / 2);
+      const ok = box[2] * box[3] < 0.55 && box[2] > fw * 0.9 && box[3] > Math.min(visH, 0.3) * 0.6 && (box[2] * 16) / (box[3] * 9) > 0.45 && (box[2] * 16) / (box[3] * 9) < 3;
+      resolve(ok ? box.map((v) => +v.toFixed(4)) : null);
+    }
+  }));
+  camRects.set(key, task); task.catch(() => camRects.delete(key));
+  return task;
+}
+// Viral scan (viralscan.js): FFmpeg watches the whole video; the page judges what is most likely to go viral
+const ytInfos = new Map();
+function ytInfo(u) {
+  if (!/youtu\.?be/.test(u)) return Promise.resolve(null);
+  if (!ytInfos.has(u)) ytInfos.set(u, ensureYtdlp().then(() => runYtdlp(['-j', '--skip-download', '--no-playlist', '--no-warnings', u])).then((t) => JSON.parse(t)).catch(() => null));
+  return ytInfos.get(u);
+}
+const viral = require('./viralscan.js')({ ffmpeg: () => FFMPEG, cacheDir: CACHE_DIR, previewJob: (...a) => previewJob(...a), twitchClip: (slug) => twitchClipMp4(slug, true),
+  linkTranscript: (u) => linkTranscript(u), transcription, ytInfo });
+// a small copy of a video (360p, picture + sound) or a song (its sound) for the previews, downloaded by yt-dlp
+const hoverJobs = new Map();
+function previewJob(u, audio) {
+  const key = crypto.createHash('sha1').update((audio ? 'a:' : 'v:') + u).digest('hex').slice(0, 16);
+  const file = path.join(CACHE_DIR, `pv_${key}.${audio ? 'm4a' : 'mp4'}`);
+  let j = previews.get(key);
+  if (j && !j.error) return j;
+  if (fs.existsSync(file) && fs.existsSync(file + '.ok')) { j = { file, done: true, total: fs.statSync(file).size }; previews.set(key, j); return j; }
+  j = { file, total: 0, done: false, error: null };
+  previews.set(key, j);
+  try { fs.unlinkSync(file); } catch {}
+  const fmt = audio ? 'bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]/18/bestaudio'
+    : '18/best[ext=mp4][vcodec!=none][acodec!=none][height<=720]/best[vcodec!=none][acodec!=none][height<=720]/best[vcodec!=none][acodec!=none]/best';
+  ensureYtdlp()
+    .then(() => runYtdlpSure(['--no-playlist', '--no-part', '--newline', '--force-overwrites', '-f', fmt,
+      '--progress-template', 'download:CZP %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s', '-o', file], u, (line) => {
+      const m = /CZP (\d+) (\S+) (\S+)/.exec(line);
+      if (m && !j.total) { const t = Number(m[2]) || Math.round(Number(m[3]) * 1.02) || 0; if (t > 0) j.total = t; }
+    }, { cleanup: () => { j.total = 0; try { fs.unlinkSync(file); } catch {} } }))
+    .then(() => { j.total = fs.statSync(file).size; j.done = true; try { fs.writeFileSync(file + '.ok', ''); } catch {} })
+    .catch((e) => { j.error = playError(e.message); });
+  return j;
+}
+// serve a file that is still being downloaded: bytes are sent as they arrive
+async function serveGrowing(req, res, j, type) {
+  const t0 = Date.now();
+  while (!j.total && !j.done && !j.error && Date.now() - t0 < 60000) await sleep(150);
+  if (j.error) return json(res, 502, { error: j.error });
+  if (j.done) return serveFile(req, res, j.file);
+  if (!j.total) return json(res, 504, { error: 'The video is taking too long to start.' });
+  const total = j.total, m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
+  let start = m && m[1] ? Number(m[1]) : 0, end = m && m[2] ? Number(m[2]) : total - 1;
+  if (m && !m[1] && m[2]) { start = total - Number(m[2]); end = total - 1; }
+  end = Math.min(end, total - 1);
+  if (start > end) { res.writeHead(416, { 'Content-Range': `bytes */${total}` }); return res.end(); }
+  res.writeHead(m ? 206 : 200, { 'Content-Type': type, 'Accept-Ranges': 'bytes', 'Content-Length': end - start + 1, 'Cache-Control': 'no-store',
+    ...(m ? { 'Content-Range': `bytes ${start}-${end}/${total}` } : {}) });
+  let closed = false;
+  req.on('close', () => { closed = true; });
+  while (!fs.existsSync(j.file) && !j.error && !closed) await sleep(120);
+  let fd = null, pos = start;
+  try {
+    fd = await fs.promises.open(j.file, 'r');
+    while (!closed && pos <= end) {
+      const size = (await fs.promises.stat(j.file).catch(() => ({ size: 0 }))).size;
+      const avail = Math.min(end + 1, size) - pos;
+      if (avail <= 0) { if (j.error || j.done) break; await sleep(120); continue; }
+      const chunk = Buffer.allocUnsafe(Math.min(256 * 1024, avail));
+      const { bytesRead } = await fd.read(chunk, 0, chunk.length, pos);
+      if (!bytesRead) { await sleep(60); continue; }
+      pos += bytesRead;
+      if (!res.write(chunk.subarray(0, bytesRead))) await new Promise((r) => res.once('drain', r));
+    }
+  } catch {} finally { try { await fd?.close(); } catch {} res.end(); }
+}
+// why a video can't play, in plain words (from yt-dlp's error)
+function playError(m) {
+  const s = String(m || '');
+  if (/private video/i.test(s)) return 'It’s a private video.';
+  if (/video unavailable|has been removed|no longer available|does not exist|not found|404/i.test(s)) return 'It was deleted or is no longer available.';
+  if (/confirm your age|age.restrict|inappropriate/i.test(s)) return 'It’s age-restricted: YouTube only plays it when you’re signed in.';
+  if (/not available in your country|geo.?restrict|blocked it in your country/i.test(s)) return 'It’s blocked in your country.';
+  if (/copyright|blocked .* on copyright/i.test(s)) return 'It was taken down for copyright.';
+  if (/members.only|join this channel/i.test(s)) return 'It’s for channel members only.';
+  if (/live event|premieres in|is live/i.test(s)) return 'It’s a live stream or hasn’t premiered yet.';
+  if (/sign in to confirm you.?re not a bot|bot/i.test(s)) return 'YouTube is asking to confirm you’re not a bot right now. Try again in a few minutes.';
+  if (/timed out|timeout|network|resolve|connection/i.test(s)) return 'Couldn’t reach the site. Check your internet connection.';
+  return s.replace(/^ERROR:\s*/, '').slice(0, 160) || 'It can’t be played.';
+}
+const transcripts = new Map();
+async function linkTranscript(u) {
+  if (transcripts.has(u)) return transcripts.get(u);
+  const task = (async () => {
+    await ensureYtdlp();
+    const dir = path.join(CACHE_DIR, 'subs', crypto.createHash('sha1').update(u).digest('hex').slice(0, 16));
+    fs.mkdirSync(dir, { recursive: true });
+    let files = fs.readdirSync(dir).filter((f) => f.endsWith('.json3'));
+    if (!files.length) {
+      await runYtdlp(['--skip-download', '--no-playlist', '--write-subs', '--write-auto-subs', '--sub-langs', 'en.*,en,-live_chat', '--sub-format', 'json3',
+        '--print-to-file', '%(title)s\t%(duration)s\t%(id)s\t%(thumbnail)s', path.join(dir, 'meta.txt'), '-o', path.join(dir, 'v.%(ext)s'), u]).catch(() => '');
+      files = fs.readdirSync(dir).filter((f) => f.endsWith('.json3'));
+    }
+    let meta = {};
+    try { const [title, duration, id, thumb] = fs.readFileSync(path.join(dir, 'meta.txt'), 'utf8').trim().split(/\r?\n/).pop().split('\t'); meta = { title, duration: Number(duration) || null, id, thumb: /^https:/.test(thumb || '') ? thumb : '' }; } catch {}
+    if (!files.length) {
+      // no captions: listen to it (the speech tools on this PC), so any video from any site has a transcript
+      if (!transcription.configured()) throw Object.assign(new Error('This video has no captions, and the speech tools aren’t set up yet (Settings → Captions and speech) to listen to it.'), { meta });
+      const words = await listenTo(u, meta.duration);
+      if (!words.length) throw Object.assign(new Error('Nobody seems to speak in this video.'), { meta });
+      return { words, source: 'speech', ...meta };
+    }
+    // hand-made captions first (more exact words), then the original language's automatic ones
+    files.sort((a, b) => (/-orig|auto/.test(a) ? 1 : 0) - (/-orig|auto/.test(b) ? 1 : 0) || a.length - b.length);
+    const j = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+    return { words: json3Words(j), source: 'captions', ...meta };
+  })();
+  transcripts.set(u, task);
+  task.catch(() => transcripts.delete(u));
+  return task;
+}
+// the sound of a link as 16 kHz mono WAV (at most 30 minutes), heard by the speech tools
+async function listenTo(u, duration) {
+  const tw = /^https:\/\/(?:clips\.twitch\.tv\/|(?:www\.)?twitch\.tv\/[A-Za-z0-9_]+\/clip\/)([A-Za-z0-9_-]{3,120})/.exec(u);
+  let info;
+  if (tw) info = { url: await twitchClipMp4(tw[1], true), headers: {} };
+  else if (/\.m3u8(\?|$)/i.test(u)) info = { url: u, headers: {} };
+  else {
+    // the sound, downloaded by yt-dlp (sites refuse their stream links to anything else)
+    const job = previewJob(u, true);
+    while (!job.done && !job.error) await sleep(300);
+    if (job.error) throw new Error(job.error);
+    info = { url: job.file, headers: {} };
+  }
+  const src = info.url, hdr = { 'User-Agent': UA, ...(info.headers || {}) };
+  const extra = Object.entries(hdr).filter(([k]) => k !== 'User-Agent').map(([k, v]) => `${k}: ${v}\r\n`).join('');
+  const wav = await new Promise((resolve, reject) => {
+    const remote = /^https?:/i.test(src);
+    const p = spawn(FFMPEG, ['-v', 'error', ...(remote ? ['-user_agent', hdr['User-Agent'], ...(extra ? ['-headers', extra] : [])] : []), '-i', src, '-t', '1800', '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', 'pipe:1'], { windowsHide: true });
+    const chunks = []; let err = '';
+    p.stdout.on('data', (d) => chunks.push(d)); p.stderr.on('data', (d) => { err = (err + d).slice(-1000); });
+    p.on('error', reject);
+    p.on('close', (code) => (code === 0 || chunks.length ? resolve(Buffer.concat(chunks)) : reject(new Error('Couldn’t get the sound of that video. ' + err.trim().split(/\r?\n/).pop()))));
+  });
+  // ffmpeg writes a WAV header with an unknown length when it pipes: put the real sizes in
+  if (wav.length > 44) { wav.writeUInt32LE(wav.length - 8, 4); const d = wav.indexOf('data'); if (d > 0) wav.writeUInt32LE(wav.length - d - 8, d + 4); }
+  const r = await transcription.transcribe(wav);
+  void duration;
+  return (r.words || []).map((w) => ({ start: w.start, end: w.end, text: w.text }));
+}
+function json3Words(j) {
+  const words = [];
+  for (const ev of j.events || []) {
+    if (!ev.segs || ev.aAppend) continue;
+    const t0 = (ev.tStartMs || 0) / 1000, dur = (ev.dDurationMs || 0) / 1000;
+    const segs = ev.segs.map((s) => ({ text: String(s.utf8 || '').replace(/\s+/g, ' ').trim(), at: t0 + (s.tOffsetMs || 0) / 1000 })).filter((s) => s.text);
+    if (!segs.length) continue;
+    const timed = ev.segs.some((s) => s.tOffsetMs);
+    if (timed || segs.length > 1) {
+      segs.forEach((s, k) => {
+        const end = k + 1 < segs.length ? segs[k + 1].at : t0 + dur;
+        for (const [n, w] of s.text.split(' ').entries()) {
+          const parts = s.text.split(' ').length, span = Math.max(0.05, end - s.at) / parts;
+          words.push({ start: +(s.at + n * span).toFixed(2), end: +(s.at + (n + 1) * span).toFixed(2), text: w });
+        }
+      });
+    } else {
+      // a whole line with no word times: spread the line's words over its time
+      const list = segs[0].text.split(' '), span = Math.max(0.1, dur) / list.length;
+      list.forEach((w, k) => words.push({ start: +(t0 + k * span).toFixed(2), end: +(t0 + (k + 1) * span).toFixed(2), text: w }));
+    }
+  }
+  words.sort((a, b) => a.start - b.start);
+  // music notes and [Music] / [Applause] marks aren't words
+  const real = words.filter((w) => !/^(\[[^\]]*\]|\([^)]*\)|[♪♫]+)$/.test(w.text) && /[\p{L}\p{N}]/u.test(w.text));
+  return real.filter((w, k) => !k || w.start > real[k - 1].start - 0.01 || w.text !== real[k - 1].text);
+}
+
 // a Kick clip is an HLS / MPEG-TS stream browsers can't play: ffmpeg repackages it as MP4 on the fly (no re-encode)
 function kickClipMp4(u, full, req, res) {
   const args = ['-v', 'error', '-user_agent', UA, '-i', u, ...(full ? [] : ['-t', '8']), '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof', 'pipe:1'];
@@ -592,7 +1010,7 @@ function kickClipMp4(u, full, req, res) {
 const mapKick = (c, ch) => {
   const chan = (c.channel && (c.channel.username || c.channel.slug)) || ch || '';
   return { id: c.id, source: 'kick', url: c.video_url || c.clip_url, page: `https://kick.com/${(c.channel && c.channel.slug) || chan}/clips/${c.id}`,
-    title: c.title, channel: chan, duration: c.duration, views: c.view_count ?? c.views, thumb: c.thumbnail_url, game: c.category && c.category.name };
+    title: c.title, channel: chan, duration: c.duration, views: c.view_count ?? c.views, thumb: c.thumbnail_url, game: c.category && c.category.name, at: Date.parse(c.created_at) || undefined };
 };
 const slugify = (s) => String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 let kickCats = null, kickCatsAt = 0;
@@ -739,11 +1157,33 @@ async function mixkitPage(slug, n, pg = 1) {
   }
   return out.slice(0, n);
 }
-// Openverse: millions of openly licensed photos, no key needed
+// Openverse: millions of openly licensed photos. Works without a key, but its open API is often overloaded
+// (it answers "504 Gateway Timeout"); with your own Openverse app keys (Settings → API keys) requests get their own
+// quota. When it's down, Wikimedia Commons photos (also openly licensed) are shown instead.
+let ovToken = null, ovDownUntil = 0;
+async function openverseAuth() {
+  if (!config.openverseId || !config.openverseSecret) return {};
+  if (ovToken && ovToken.until > Date.now()) return { Authorization: `Bearer ${ovToken.value}` };
+  const body = `grant_type=client_credentials&client_id=${encodeURIComponent(config.openverseId)}&client_secret=${encodeURIComponent(config.openverseSecret)}`;
+  const j = JSON.parse(await curl('https://api.openverse.org/v1/auth_tokens/token/', { accept: 'application/json', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body }));
+  if (!j.access_token) throw new Error('Openverse didn’t accept your app keys.');
+  ovToken = { value: j.access_token, until: Date.now() + Math.max(60, (Number(j.expires_in) || 3600) - 120) * 1000 };
+  return { Authorization: `Bearer ${ovToken.value}` };
+}
 async function openverseSearch(q, orient, n, pg = 1) {
   q = q || 'scenery'; // "All": a nice default instead of random uploads
   const ar = orient === 'vertical' ? '&aspect_ratio=tall' : orient === 'horizontal' ? '&aspect_ratio=wide' : '';
-  const j = JSON.parse(await curl(`https://api.openverse.org/v1/images/?${q ? 'q=' + encodeURIComponent(q) + '&' : ''}page_size=20&page=${pg}&license_type=commercial,modification&size=large${ar}`, { accept: 'application/json' }));
+  let j;
+  try {
+    if (Date.now() < ovDownUntil) throw new Error('down');
+    const headers = await openverseAuth().catch(() => ({}));
+    j = JSON.parse(await curl(`https://api.openverse.org/v1/images/?${q ? 'q=' + encodeURIComponent(q) + '&' : ''}page_size=20&page=${pg}&license_type=commercial,modification&size=large${ar}`, { accept: 'application/json', headers, maxTime: 12 }));
+  } catch (e) {
+    // down: don't wait on it again for a few minutes; show Wikimedia Commons photos for the same search
+    if (Date.now() >= ovDownUntil) ovDownUntil = Date.now() + 5 * 60e3;
+    const alt = await commonsSearch(q, n, 'photo', orient, pg);
+    return alt.map((x, k) => (k ? x : { ...x, note: 'Openverse isn’t answering right now (its servers are overloaded), so these openly licensed photos are from Wikimedia Commons. Adding your own Openverse keys in Settings → API keys helps.' }));
+  }
   return (j.results || []).filter((r) => r.url && !/\.svg$/i.test(r.url)).map((r) => ({ id: 'ov' + r.id, source: 'openverse', photo: true, url: r.url, page: r.foreign_landing_url,
     title: decodeHtml(String(r.title || q || 'Photo').replace(/<[^>]+>/g, '')).trim() || 'Photo', channel: r.creator || r.provider, thumb: r.url, license: `CC ${String(r.license || '').toUpperCase()} — credit ${r.creator || r.provider}`, w: r.width, h: r.height }));
 }
@@ -962,7 +1402,8 @@ function ytSp({ when, type, short, hd, k4 } = {}) {
 const ytResults = (query, sp) => `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}${sp ? '&sp=' + sp : ''}`;
 // Mark which results are available in 4K: YouTube's own 4K-filtered search for the same words,
 // started alongside the normal search (k4search) and matched up afterwards (tag4k)
-const k4search = (query, opts) => ytList(ytResults(query, ytSp({ ...opts, k4: true })), 60).catch(() => []);
+// (one quick page of YouTube's own 4K results: yt-dlp's 60-result list took seconds longer)
+const k4search = (query, opts) => ytQuick(ytResults(query, ytSp({ ...opts, k4: true }))).catch(() => ytList(ytResults(query, ytSp({ ...opts, k4: true })), 60)).catch(() => []);
 async function tag4k(list, k4) {
   const ids = new Set((await k4).map((x) => x.id));
   return list.map((m) => (ids.has(m.id) ? { ...m, res: '4K' } : m));
@@ -979,8 +1420,10 @@ async function ytList(target, count, start = 1) {
   const d = JSON.parse(await runYtdlp(['--flat-playlist', '-J', '--playlist-start', String(start), '--playlist-end', String(start + count - 1), '--', target]));
   return (d.entries || []).filter((e) => e && e.id && (e.ie_key === 'Youtube' || /watch|shorts/.test(e.url || '')) && e.duration !== 0)
     .map((e) => ({ id: e.id, source: 'youtube', url: `https://www.youtube.com/watch?v=${e.id}`, title: e.title, channel: e.channel || e.uploader,
-      duration: e.duration, views: e.view_count, thumb: `https://i.ytimg.com/vi/${e.id}/mqdefault.jpg` }));
+      duration: e.duration, views: e.view_count, thumb: `https://i.ytimg.com/vi/${e.id}/mqdefault.jpg`, ...(/\/shorts\//.test(e.url || '') ? { shorts: true } : {}) }));
 }
+// the YouTube tab shows regular videos only: Shorts have their own tab
+const notShort = (m) => !m.shorts && !/#shorts?\b/i.test(m.title || '');
 
 // The quick first answer for YouTube searches: one request for the results page itself (under a second),
 // read straight from the page's own data. yt-dlp's 100-result list (5+ seconds) follows behind it.
@@ -1017,6 +1460,30 @@ async function ytQuick(target) {
   ytWalk(JSON.parse(m[1]), out);
   return dedupeById(out).map((e) => ({ ...e, source: 'youtube', url: `https://www.youtube.com/watch?v=${e.id}`, thumb: `https://i.ytimg.com/vi/${e.id}/mqdefault.jpg` }));
 }
+// More than one page, still fast: the results page, then YouTube's own "load more" requests (each well under a
+// second), instead of yt-dlp's 100-result list. Returns null when YouTube's page can't be read (yt-dlp takes over).
+async function ytQuickPages(target, pages = 5) {
+  const html = await curl(target, { headers: { 'Accept-Language': 'en-US,en;q=0.9', Cookie: 'CONSENT=YES+1; SOCS=CAI' } });
+  const m = /var ytInitialData = (\{[\s\S]*?\});<\/script>/.exec(html);
+  if (!m) return null;
+  const out = [];
+  ytWalk(JSON.parse(m[1]), out);
+  const key = (/"INNERTUBE_API_KEY":"([^"]+)"/.exec(html) || [])[1], ver = (/"INNERTUBE_CLIENT_VERSION":"([^"]+)"/.exec(html) || [])[1] || '2.20261101.00.00';
+  let token = (/"continuationCommand":\{"token":"([^"]+)"/.exec(m[1]) || [])[1];
+  for (let k = 1; k < pages && token; k++) {
+    try {
+      const body = JSON.stringify({ context: { client: { clientName: 'WEB', clientVersion: ver, hl: 'en', gl: 'US' } }, continuation: token });
+      const raw = await curl(`https://www.youtube.com/youtubei/v1/search?prettyPrint=false${key ? '&key=' + key : ''}`,
+        { accept: 'application/json', headers: { 'Content-Type': 'application/json', 'X-YouTube-Client-Name': '1', 'X-YouTube-Client-Version': ver, Origin: 'https://www.youtube.com' }, body });
+      const before = out.length;
+      ytWalk(JSON.parse(raw), out);
+      token = (/"continuationCommand":\{"token":"([^"]+)"/.exec(raw) || [])[1];
+      if (out.length === before) break;
+    } catch { break; }
+  }
+  return dedupeById(out).map((e) => ({ ...e, source: 'youtube', url: `https://www.youtube.com/watch?v=${e.id}`, thumb: `https://i.ytimg.com/vi/${e.id}/mqdefault.jpg` }));
+}
+
 // the first-page YouTube answer, while the full search runs on into the cache
 async function ytFast(q) {
   const source = q.get('source') || 'youtube';
@@ -1032,12 +1499,12 @@ async function ytFast(q) {
     target = query ? `https://www.youtube.com/@${handle}/search?query=${encodeURIComponent(query)}` : `https://www.youtube.com/@${handle}/videos`;
   } else if (source === 'shorts') target = ytResults(`${query} #shorts`, ytSp({ hd: quality === 'hd', k4: quality === '4k' }));
   // type 1 = videos only, so the first page isn't mostly a Shorts shelf
-  else target = ytResults(query, ytSp({ when, short, type: short ? 0 : 1, hd: quality === 'hd', k4: quality === '4k' }));
+  else target = ytResults(query, ytSp({ when, short, type: 1, hd: quality === 'hd', k4: quality === '4k' }));
   try {
     let list = await ytQuick(target);
     if (source === 'ytchannel') list = list.map((m) => ({ ...m, channel: m.channel || q.get('handle') }));
     if (source === 'shorts') list = list.filter((m) => !m.duration || m.duration <= 180).map((m) => ({ ...m, shorts: true }));
-    else if (source === 'youtube') list = list.filter((m) => (short ? m.shorts || (m.duration && m.duration <= 240) : !m.shorts && m.duration !== 0));
+    else if (source === 'youtube') list = list.filter((m) => notShort(m) && (short ? m.duration && m.duration <= 240 : m.duration !== 0));
     if (quality === '4k') list = list.map((m) => ({ ...m, res: '4K' }));
     else if (quality === 'hd') list = list.map((m) => ({ ...m, res: 'HD' }));
     if (list.length) return list;
@@ -1121,7 +1588,9 @@ async function momentsSearch(q, pg) {
 
 async function finderSearch(q) {
   const source = q.get('source') || 'youtube';
-  if (q.get('fast') === '1' && ['youtube', 'shorts', 'ytchannel'].includes(source) && (Number(q.get('page')) || 1) === 1 && (source === 'ytchannel' ? q.get('handle') : q.get('q'))) return ytFast(q);
+  // "Newest first": the latest clips / uploads instead of the most viewed
+  const newest = q.get('newest') === '1', KS = newest ? 'date' : 'view', YTS = newest ? 'ytsearchdate' : 'ytsearch';
+  if (q.get('fast') === '1' && q.get('newest') !== '1' && ['youtube', 'shorts', 'ytchannel'].includes(source) && (Number(q.get('page')) || 1) === 1 && (source === 'ytchannel' ? q.get('handle') : q.get('q'))) return ytFast(q);
   const n = Math.max(1, Math.min(50, Number(q.get('n')) || 24));
   const range = q.get('range') || 'week';
   const pg = Math.max(1, Math.min(30, Number(q.get('page')) || 1));
@@ -1143,22 +1612,22 @@ async function finderSearch(q) {
         if (quality === '4k' || quality === 'hd') {
           const list = await ytList(ytResults(qq, ytSp({ when, short, hd: quality === 'hd', k4: quality === '4k' })), 100);
           const tagged = quality === '4k' ? list.map((m) => ({ ...m, res: '4K' })) : await tag4k(list.map((m) => ({ ...m, res: 'HD' })), k4search(qq, { when, short }));
-          return tagged.filter(okLen);
+          return tagged.filter(okLen).filter(notShort);
         }
         const k4 = k4search(qq, { when, short });
         let list;
+        // fast: YouTube's own pages (about 100 results in a couple of seconds); yt-dlp if that page can't be read
+        const quick = await ytQuickPages(ytResults(qq, ytSp({ when, short, type: 1 })), 5).catch(() => null);
+        if (quick && quick.length >= 25) return tag4k(quick.filter(notShort).filter(okLen), k4);
         if (when && pg === 1) {
           const [a1, b1] = await Promise.all([
             ytList(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=${YT_SP[short ? when + '+short' : when]}`, 100).catch(() => []),
-            ytList(`ytsearch100:${query} ${when === 'day' ? 'today' : 'this ' + when}`, 100),
+            ytList(`${YTS}100:${query} ${when === 'day' ? 'today' : 'this ' + when}`, 100),
           ]);
           list = dedupeById(a1.concat(b1.filter(okLen)));
-        } else if (!short) list = await ytList(`ytsearch100:${qq}`, 100);
-        else {
-          const [a2, b2] = await Promise.all([ytList(`ytsearch100:${qq}`, 100), ytList(`ytsearch100:${qq} #shorts`, 100).catch(() => [])]);
-          list = dedupeById(a2.filter(okLen).concat(b2.filter(okLen)));
-        }
-        return tag4k(list, k4);
+        } else if (!short) list = await ytList(`${YTS}100:${qq}`, 100);
+        else list = (await ytList(`${YTS}100:${qq}`, 100)).filter(okLen);
+        return tag4k(list.filter(notShort), k4);
       }
       case 'shorts': {
         need();
@@ -1171,7 +1640,7 @@ async function finderSearch(q) {
         }
         const k4 = k4search(`${qq} #shorts`, {});
         const [a1, b1] = await Promise.all([
-          ytList(`ytsearch100:${qq} #shorts`, 100),
+          ytList(`${YTS}100:${qq} #shorts`, 100),
           pg === 1 ? ytList(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=EgIQCQ%3D%3D`, 60).catch(() => []) : Promise.resolve([]),
         ]);
         let list = dedupeById(b1.concat(a1)).filter((m) => !m.duration || m.duration <= 180).map((m) => ({ ...m, shorts: true }));
@@ -1190,7 +1659,7 @@ async function finderSearch(q) {
       case 'dailymotion': {
         need();
         const lim = q.get('short') === '1' ? '&shorter_than=4' : '';
-        const j = JSON.parse(await curl(`https://api.dailymotion.com/videos?search=${encodeURIComponent(query)}&fields=id,title,duration,thumbnail_360_url,owner.screenname,views_total&sort=relevance&limit=100&page=${pg}${lim}`, { accept: 'application/json' }));
+        const j = JSON.parse(await curl(`https://api.dailymotion.com/videos?search=${encodeURIComponent(query)}&fields=id,title,duration,thumbnail_360_url,owner.screenname,views_total&sort=${q.get('newest') === '1' ? 'recent' : 'relevance'}&limit=100&page=${pg}${lim}`, { accept: 'application/json' }));
         return (j.list || []).map((v) => ({ id: v.id, source: 'dailymotion', url: `https://www.dailymotion.com/video/${v.id}`, title: v.title,
           channel: v['owner.screenname'] || '', duration: v.duration, views: v.views_total, thumb: v.thumbnail_360_url }));
       }
@@ -1211,16 +1680,17 @@ async function finderSearch(q) {
         if (!/^[A-Za-z0-9_-]{2,40}$/.test(ch)) throw new Error('Type a streamer’s channel name.');
         if (source === 'kick') {
           const t = { day: 'day', week: 'week', month: 'month', all: 'all' }[range] || 'week';
-          return (await kickTwoPages(`https://kick.com/api/v2/channels/${ch.toLowerCase()}/clips?sort=view&time=${t}`, pg)).map((c) => mapKick(c, ch));
+          return (await kickTwoPages(`https://kick.com/api/v2/channels/${ch.toLowerCase()}/clips?sort=${KS}&time=${t}`, pg)).map((c) => mapKick(c, ch));
         }
-        const first = Math.min(100, n * pg);
+        if ((pg - 1) * n >= TW_CLIP_LIMIT) return [];
+        const first = newest ? TW_CLIP_LIMIT : Math.min(TW_CLIP_LIMIT, n * pg);
         try {
-          const d = await twitchGql(`query($login:String!,$p:ClipsPeriod){user(login:$login){clips(first:${first}, criteria:{period:$p, sort:VIEWS_DESC}){edges{node{${TW_FIELDS}}}}}}`,
-            { login: ch.toLowerCase(), p: TW_PERIOD[range] || 'LAST_WEEK' });
+          const d = await twitchFinderQuery(`query($login:String!,$p:ClipsPeriod){user(login:$login){clips(first:${first}, criteria:{period:$p, sort:VIEWS_DESC}){edges{node{${TW_FIELDS}}}}}}`,
+            { login: ch.toLowerCase(), p: TW_PERIOD[range] || 'LAST_WEEK' }, (x) => (x.user === null ? 'none' : x.user?.clips?.edges), newest);
           if (!d.user) throw new Error(`No Twitch channel called “${ch}”.`);
-          return d.user.clips.edges.map((e) => mapTwitch(e.node)).slice((pg - 1) * n);
+          return twitchClipPage(d.user.clips.edges, newest, pg, n);
         } catch (e) {
-          if (/No Twitch channel/.test(e.message) || pg > 1) throw e;
+          if (/No Twitch channel/.test(e.message) || newest || pg > 1) throw e;
           await ensureYtdlp(); // fallback
           const r = { day: '24hr', week: '7d', month: '30d', all: 'all' }[range] || '7d';
           const d = JSON.parse(await runYtdlp(['--flat-playlist', '-J', '--playlist-end', String(n), '--', `https://www.twitch.tv/${ch}/clips?filter=clips&range=${r}`]));
@@ -1229,20 +1699,25 @@ async function finderSearch(q) {
       }
       case 'twitchgame': {
         need('Type a game or category, e.g. Valorant or Just Chatting.');
-        const name = await twitchGameName(query);
+        if ((pg - 1) * n >= TW_CLIP_LIMIT) return [];
+        const names = await twitchGameNames(query);
         const langs = q.get('en') === '1' ? ', languages:[EN]' : '';
-        const first = Math.min(100, n * pg);
-        const d = await twitchGql(`query($name:String!,$p:ClipsPeriod){game(name:$name){displayName clips(first:${first}, criteria:{period:$p, sort:VIEWS_DESC${langs}}){edges{node{${TW_FIELDS}}}}}}`,
-          { name, p: TW_PERIOD[range] || 'LAST_WEEK' });
-        if (!d.game) throw new Error(`No Twitch category “${query}”.`);
-        return d.game.clips.edges.map((e) => mapTwitch(e.node)).slice((pg - 1) * n);
+        const first = newest ? TW_CLIP_LIMIT : Math.min(TW_CLIP_LIMIT, n * pg);
+        // the best match first; a category without clips in this time range: the next one it could mean
+        for (const name of names.slice(0, 3)) {
+          const d = await twitchFinderQuery(`query($name:String!,$p:ClipsPeriod){game(name:$name){clips(first:${first}, criteria:{period:$p, sort:VIEWS_DESC${langs}}){edges{node{${TW_FIELDS}}}}}}`,
+            { name, p: TW_PERIOD[range] || 'LAST_WEEK' }, (x) => (x.game === null ? 'none' : x.game?.clips?.edges), newest);
+          const edges = d.game?.clips?.edges;
+          if (edges?.length) return twitchClipPage(edges, newest, pg, n);
+        }
+        return [];
       }
       case 'kickgame': {
         need('Type a game or category, e.g. GTA V or Just Chatting.');
         const slug = await kickCategorySlug(query);
         const t = { day: 'day', week: 'week', month: 'month', all: 'all' }[range] || 'week';
         // Kick's list for a category also holds clips of other categories: three pages, then keep that game's own clips
-        const base = `https://kick.com/api/v2/categories/${slug}/clips?sort=view&time=${t}`, all = [];
+        const base = `https://kick.com/api/v2/categories/${slug}/clips?sort=${KS}&time=${t}`, all = [];
         for (let p = pg * 3 - 2; p <= pg * 3; p++) { const c = await kickPage(base, p).catch(() => []); if (!c.length) break; all.push(...c); }
         const list = dedupeById(all.map((c) => mapKick(c))), want = kickNorm(slug.replace(/-/g, ' '));
         const own = list.filter((c) => { const g = kickNorm(c.game); return g && (g.includes(want) || want.includes(g)); });
@@ -1252,26 +1727,30 @@ async function finderSearch(q) {
         const t = { day: 'day', week: 'week', month: 'month', all: 'all' }[range] || 'day';
         if (q.get('gaming') === '1') {
           // gaming only: the top clips of each big game category, mixed and sorted by views
-          const lists = await Promise.allSettled(KICK_GAMES.map((g) => kickPage(`https://kick.com/api/v2/categories/${g}/clips?sort=view&time=${t}`, pg)));
+          const lists = await Promise.allSettled(KICK_GAMES.map((g) => kickPage(`https://kick.com/api/v2/categories/${g}/clips?sort=${KS}&time=${t}`, pg)));
           const all = lists.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])).map((c) => mapKick(c)).filter((c) => c.game && !NON_GAMING.test(c.game));
           if (!all.length && lists.every((r) => r.status === 'rejected')) throw lists[0].reason;
           return dedupeById(all).sort((x, y) => (y.views || 0) - (x.views || 0));
         }
-        return (await kickTwoPages(`https://kick.com/api/v2/clips?sort=view&time=${t}`, pg)).map((c) => mapKick(c));
+        return (await kickTwoPages(`https://kick.com/api/v2/clips?sort=${KS}&time=${t}`, pg)).map((c) => mapKick(c));
       }
       case 'twitchtop': {
         // top clips across the biggest categories (optionally games only)
         const games = q.get('gaming') === '1' ? GAMING_LIST : ['Just Chatting', ...GAMING_LIST.slice(0, 7)];
-        const per = Math.min(100, (Math.ceil(n / games.length) + 4) * pg);
+        const per = (Math.ceil(n / games.length) + 4) * (newest ? 3 : pg);
+        if (newest && (pg - 1) * n >= per * games.length) return [];
         const langs = q.get('en') === '0' ? '' : ', languages:[EN]';
-        const parts = games.map((g, i) => `g${i}: game(name:${JSON.stringify(g)}){clips(first:${per}, criteria:{period:$p, sort:VIEWS_DESC${langs}}){edges{node{${TW_FIELDS}}}}}`).join(' ');
-        const d = await twitchGql(`query($p:ClipsPeriod){ ${parts} }`, { p: TW_PERIOD[range] || 'LAST_WEEK' });
-        return Object.values(d).filter((g) => g && g.clips).flatMap((g) => g.clips.edges.map((e) => mapTwitch(e.node)))
-          .sort((x, y) => (y.views || 0) - (x.views || 0)).slice((pg - 1) * n, pg * n);
+        const parts = games.map((g, i) => `g${i}: game(name:${JSON.stringify(g)}){clips(first:${Math.min(TW_CLIP_LIMIT, per)}, criteria:{period:$p, sort:VIEWS_DESC${langs}}){edges{node{${TW_FIELDS}}}}}`).join(' ');
+        const clipLists = (data) => Object.values(data).map((g) => g?.clips?.edges).filter(Array.isArray);
+        const d = await twitchFinderQuery(`query($p:ClipsPeriod){ ${parts} }`, { p: TW_PERIOD[range] || 'LAST_WEEK' },
+          (data) => clipLists(data).length || null, newest);
+        const edges = clipLists(d).flat();
+        if (!newest) edges.sort((a, b) => (b?.node?.viewCount || 0) - (a?.node?.viewCount || 0));
+        return twitchClipPage(edges, newest, pg, n);
       }
       case 'streamtrend': {
         // the most-viewed clips right now on Twitch AND Kick, taking turns so both show up
-        const sub = (src) => finderSearch(new URLSearchParams({ source: src, range, n: String(n), page: String(pg), en: q.get('en') || '1' }));
+        const sub = (src) => finderSearch(new URLSearchParams({ source: src, range, n: String(n), page: String(pg), en: q.get('en') || '1', newest: newest ? '1' : '0' }));
         const [tw, ki] = await Promise.allSettled([sub('twitchtop'), sub('kicktrend')]);
         const A = tw.status === 'fulfilled' ? tw.value : [], B = ki.status === 'fulfilled' ? ki.value : [];
         if (!A.length && !B.length) throw new Error((tw.reason || ki.reason || {}).message || 'No clips found right now.');
@@ -1521,8 +2000,13 @@ async function runGrab(job) {
     url = `https://www.youtube.com/watch?v=${vid[1]}`;
   }
 
+  // Long video → clips: the whole video (up to an hour), so Clipper Mode can find all its best moments
+  if (start == null && job.req.whole) {
+    if (!duration) { job.phase = 'Checking video'; try { const info = JSON.parse(await runYtdlp(['-J', '--no-playlist', '--', url])); duration = info.duration || 0; title = title || info.title; } catch {} }
+    if (duration > 3600) { start = 0; end = 3600; job.note = 'first hour'; }
+  }
   // long YouTube videos: grab the most-replayed part instead of the whole thing
-  if (start == null && /youtube\.com|youtu\.be/i.test(url) && (!duration || duration > 600)) {
+  else if (start == null && /youtube\.com|youtu\.be/i.test(url) && (!duration || duration > 600)) {
     job.phase = 'Checking video';
     const info = JSON.parse(await runYtdlp(['-J', '--no-playlist', '--', url]));
     duration = info.duration || 0;
@@ -1587,20 +2071,46 @@ async function runGrab(job) {
     const m = /\[PROG\]\s*([\d.]+)%/.exec(line);
     if (m) job.pct = Math.max(job.pct || 0, Math.min(99, Number(m[1])));
   };
-  // YouTube sometimes refuses one download link (HTTP 403) and a fresh one works: try once more before giving up
-  try { await runYtdlp([...args, '--', url], onLine); }
-  catch (e) {
-    if (!/403|forbidden|timed out|connection reset|incomplete/i.test(e.message)) throw e;
-    job.phase = 'Retrying'; job.pct = 0;
-    for (const f of fs.readdirSync(CACHE_DIR)) if (f.startsWith(`grab_${job.id}.`)) fs.unlink(path.join(CACHE_DIR, f), () => {});
-    await new Promise((r) => setTimeout(r, 1500));
-    job.phase = 'Downloading';
-    await runYtdlp([...args, '--', url], onLine);
-  }
-  let file = fs.readdirSync(CACHE_DIR).filter((f) => f.startsWith(`grab_${job.id}.`) && !/\.(part|ytdl|temp)/.test(f))
+  // YouTube sometimes refuses a download link (HTTP 403): fresh player data / another player client usually works
+  const cleanup = () => { for (const f of fs.readdirSync(CACHE_DIR)) if (f.startsWith(`grab_${job.id}.`) || f.startsWith(`grab_${job.id}_whole.`)) { try { fs.unlinkSync(path.join(CACHE_DIR, f)); } catch {} } };
+  const fileOf = (prefix) => fs.readdirSync(CACHE_DIR).filter((f) => f.startsWith(prefix) && !/\.(part|ytdl|temp)/.test(f))
     .map((f) => path.join(CACHE_DIR, f)).sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0];
+  // the file is really a video (a crashed merge or cut leaves a broken one behind)
+  const good = async (f) => { try { return f && fs.statSync(f).size > 10000 && (await probeCodec(f)); } catch { return null; } };
+  let file = null, codec = null, lastErr = null;
+  try {
+    await runYtdlpSure(args, url, onLine, { cleanup, onRetry: (k) => { job.phase = `Retrying (${k})`; job.pct = 0; } });
+    file = fileOf(`grab_${job.id}.`); codec = await good(file);
+  } catch (e) { lastErr = e; }
+  // the download or its joining / cutting broke (the FFmpeg that yt-dlp uses crashed, a damaged file): again as one
+  // ready-made file (no joining), with Cutsona's own FFmpeg
+  if (!codec) {
+    job.phase = 'Trying another way'; job.pct = 0; cleanup();
+    const own = path.isAbsolute(FFMPEG) ? ['--ffmpeg-location', path.dirname(FFMPEG)] : [];
+    const a2 = args.map((x, k) => (args[k - 1] === '-f' ? 'b[ext=mp4][vcodec!=none][acodec!=none]/b[vcodec!=none][acodec!=none]/b' : x)).concat(own);
+    try { await runYtdlpSure(a2, url, onLine, { cleanup }); file = fileOf(`grab_${job.id}.`); codec = await good(file); } catch (e) { lastErr = e; }
+  }
+  // a part of a video that still won't cut: get the whole (short enough) video, and cut the part with Cutsona's FFmpeg
+  if (!codec && start != null && (!duration || duration <= 1500)) {
+    job.phase = 'Getting the whole video'; job.pct = 0; cleanup();
+    const i = args.indexOf('--download-sections');
+    const a3 = args.filter((_, k) => k !== i && k !== i + 1).map((x) => x.replace(`${base}.%(ext)s`, `${base}_whole.%(ext)s`))
+      .map((x, k, arr) => (arr[k - 1] === '-f' ? 'b[ext=mp4][vcodec!=none][acodec!=none]/b' : x));
+    try {
+      await runYtdlpSure(a3, url, onLine, { cleanup });
+      const whole = fileOf(`grab_${job.id}_whole.`);
+      if (await good(whole)) {
+        job.phase = 'Cutting the part'; job.pct = 99;
+        const out = `${base}.mp4`;
+        await runFfmpeg(['-ss', String(start), '-to', String(end), '-i', whole, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', out]);
+        fs.unlink(whole, () => {});
+        file = out; codec = await good(out);
+      }
+    } catch (e) { lastErr = e; }
+  }
+  job.phase = 'Downloading';
+  if (!codec && lastErr) throw lastErr;
   if (!file) throw new Error('Download finished but no video file was found.');
-  const codec = await probeCodec(file);
   if (!codec) throw new Error('That link did not contain a video.');
   if (!['h264', 'vp8', 'vp9', 'av1'].includes(codec) || !file.endsWith('.mp4')) {
     job.phase = 'Converting'; job.pct = 99;
@@ -1646,10 +2156,13 @@ async function grabSong(job, url, title, start, end) {
     const args = ['--no-playlist', '-f', 'bestaudio/best', '-x', '--audio-format', 'mp3', '--audio-quality', '0',
       '-o', `${base}.%(ext)s`, '--newline', '--progress-template', 'download:[PROG] %(progress._percent_str)s'];
     if (start != null) args.push('--download-sections', `*${start.toFixed(2)}-${end.toFixed(2)}`);
-    await runYtdlp([...args, '--', url], (line) => {
+    await runYtdlpSure(args, url, (line) => {
       const m = /\[PROG\]\s*([\d.]+)%/.exec(line);
       if (m) job.pct = Math.max(job.pct || 0, Math.min(95, Number(m[1])));
       if (/ExtractAudio/.test(line)) job.phase = 'Making MP3';
+    }, {
+      cleanup: () => { for (const f of fs.readdirSync(CACHE_DIR)) if (f.startsWith(`song_${job.id}.`)) { try { fs.unlinkSync(path.join(CACHE_DIR, f)); } catch {} } },
+      onRetry: (k) => { job.phase = `Retrying (${k})`; job.pct = 0; },
     });
     if (!fs.existsSync(out)) throw new Error('Could not turn that link into an MP3.');
   }
@@ -1674,6 +2187,51 @@ async function photoToClip(src, out, seconds = 8) {
   await runFfmpeg(['-loop', '1', '-framerate', '30', '-i', src, '-vf',
     `scale=${W * 2}:${H * 2}:flags=lanczos,zoompan=z='min(1+0.15*on/${frames},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${W}x${H}:fps=30,format=yuv420p`,
     '-frames:v', String(frames), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-movflags', '+faststart', out]);
+}
+
+async function findTitleCards(file) {
+  const side = file + '.cards.json';
+  try { const j = JSON.parse(fs.readFileSync(side, 'utf8')); if (j.v === 2) return j; } catch {}
+  const W = 64, H = 36, FPS = 4, size = W * H * 3;
+  const flags = await new Promise((resolve, reject) => {
+    const p = spawn(FFMPEG, ['-v', 'error', '-i', file, '-an', '-vf', `fps=${FPS},scale=${W}:${H}`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], { windowsHide: true });
+    const out = []; let buf = Buffer.alloc(0), prev = null;
+    p.stdout.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= size) {
+        const f = buf.subarray(0, size); buf = buf.subarray(size);
+        let dark = 0, bright = 0, mid = 0, sat = 0, diff = 0;
+        const lum = new Uint8Array(W * H);
+        for (let i = 0, k = 0; i < size; i += 3, k++) {
+          const r = f[i], g = f[i + 1], b = f[i + 2], L = 0.299 * r + 0.587 * g + 0.114 * b;
+          lum[k] = L;
+          if (L < 45) dark++; else if (L > 160) bright++; else mid++;
+          sat += Math.max(r, g, b) - Math.min(r, g, b);
+          if (prev) diff += Math.abs(L - prev[k]);
+        }
+        const n = W * H, dk = dark / n, br = bright / n, md = mid / n, st = sat / n, mv = prev ? diff / n : 0;
+        prev = lum;
+        const black = dk > 0.985 && br < 0.002;
+        // a card holds still (or drifts slowly): dark action shots in a trailer move, so they don't count
+        const card = mv < 5 && ((dk > 0.7 && md < 0.1 && br > 0.004 && br < 0.3 && st < 28) || (br > 0.7 && md < 0.1 && st < 20));
+        out.push(black ? 2 : card ? 1 : 0);
+      }
+    });
+    p.on('error', reject);
+    p.on('close', () => resolve(out));
+  });
+  const cards = [];
+  for (let i = 0; i < flags.length;) {
+    if (!flags[i]) { i++; continue; }
+    let j = i, gap = 0, anyCard = false;
+    while (j < flags.length && (flags[j] || gap < 1)) { if (flags[j]) { gap = 0; if (flags[j] === 1) anyCard = true; } else gap++; j++; }
+    const a = i / FPS, b = (j - gap) / FPS;
+    if (b - a >= (anyCard ? 0.75 : 0.4)) cards.push([Math.max(0, +(a - 0.15).toFixed(2)), +(b + 0.15).toFixed(2), anyCard ? 'card' : 'black']);
+    i = j;
+  }
+  const res = { v: 2, cards };
+  try { fs.writeFileSync(side, JSON.stringify(res)); } catch {}
+  return res;
 }
 
 function readJson(req) {
@@ -1705,6 +2263,16 @@ function allowed(req) {
 }
 const SECURITY_HEADERS = { 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer', 'Cross-Origin-Resource-Policy': 'same-origin' };
 
+// Topic to video: a narrated video from a topic or a folder (script, voice, pictures, music, captions)
+const docs = require('./docmaker.js')({ ffmpeg: () => FFMPEG, curl, curlFile, BIN_DIR, CACHE_DIR, TMP_DIR, exportDir: () => EXPORT_DIR, get config() { return config; },
+  ytSongSearch: (...a) => ytSongSearch(...a), grabSong: (...a) => grabSong(...a), pexelsSearch: (...a) => pexelsSearch(...a), uid, pickFolder,
+  grabClip: async (job) => {
+    if (REDDIT_LINK.test(job.req.url)) throw new Error(REDDIT_MSG);
+    try { await runGrab(job); } catch (e) { throw new Error(friendlyGrabError(e.message, job.req.url)); }
+  },
+  translate: (...a) => transcription.translate(...a),
+  serveFile: (...a) => serveFile(...a),
+  lut: async (name) => { if (!LUTS[name]) return null; await ensureModels([[`luts/${name}.png`, `https://gmic.eu/color_presets/${LUTS[name]}.png`]], 'lut_' + name); return path.join(VISION_DIR, 'luts', name + '.png'); } });
 async function handle(req, res) {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
   if (!allowed(req)) { res.writeHead(403, { 'Content-Type': 'text/plain' }); return res.end('Forbidden'); }
@@ -1714,6 +2282,8 @@ async function handle(req, res) {
 
   try {
     if (p === '/api/ping') { lastPing = Date.now(); return json(res, 200, { ok: true, app: 'cutsona' }); }
+    // Topic to video (docmaker.js)
+    if (p.startsWith('/api/doc/') && await docs.route(req, res, p, q, json, readJson)) return;
     // the window is closing (or reloading: then a new ping follows within a second)
     if (p === '/api/bye' && req.method === 'POST') { lastBye = Date.now(); req.resume(); res.writeHead(204); return res.end(); }
 
@@ -1728,9 +2298,17 @@ async function handle(req, res) {
       }
       const audio = Buffer.concat(chunks);
       if (audio.length < 44 || audio.toString('ascii', 0, 4) !== 'RIFF' || audio.toString('ascii', 8, 12) !== 'WAVE') return json(res, 400, { error: 'Expected WAV audio.' });
-      try { return json(res, 200, await transcription.transcribe(audio)); }
+      try { return json(res, 200, await transcription.transcribe(audio, q.get('lang') || 'auto')); }
       catch (error) { return json(res, 503, { error: error.message }); }
     }
+    // captions in another language: { texts: [...], from, to } -> { texts: [...] } (Argos Translate, on this PC)
+    if (p === '/api/translate' && req.method === 'POST') {
+      const b = await readJson(req);
+      const texts = Array.isArray(b.texts) ? b.texts.slice(0, 2000).map((x) => String(x).slice(0, 600)) : [];
+      try { return json(res, 200, { texts: await transcription.translate(texts, String(b.from || 'en'), String(b.to || 'en')) }); }
+      catch (error) { return json(res, 503, { error: 'Translation failed: ' + error.message }); }
+    }
+    if (p === '/api/translate/status') return json(res, 200, { phase: transcription.translateStatus() });
 
     // hover / preview playback of a Twitch or Kick clip as plain video (their embeds won't autoplay muted)
     if (p === '/api/finder/hover') {
@@ -1741,6 +2319,85 @@ async function handle(req, res) {
         if (/^https:\/\/clips\.kick\.com\/clips\/[A-Za-z0-9_/-]+\/playlist\.m3u8$/.test(u)) return kickClipMp4(u, full, req, res);
         return json(res, 400, { error: 'Only Twitch and Kick clips play here.' });
       } catch (e) { return json(res, 502, { error: e.message }); }
+    }
+    // any video link as a plain MP4 Cutsona's own player can play (no YouTube player, logo or overlays):
+    // yt-dlp finds a direct stream with sound, the page plays it from there
+    // a video (or a song) played THROUGH Cutsona: yt-dlp downloads a small copy into the cache and it plays
+    // while it downloads, seeking included. (YouTube refuses its stream links to anything but yt-dlp now.)
+    // a few seconds of a video for the hover preview in Find clips: Cutsona's own <video>, so none of YouTube's
+    // player icons (play / pause, title bar) show over the picture
+    if (p === '/api/finder/hoverclip') {
+      const u = String(q.get('url') || ''), s0 = Math.max(0, Number(q.get('start')) || 0), len = Math.min(12, Math.max(2, Number(q.get('len')) || 6));
+      if (!/^https:\/\//i.test(u)) return json(res, 400, { error: 'Not a link.' });
+      const key = crypto.createHash('sha1').update(`h:${u}:${s0}:${len}`).digest('hex').slice(0, 16), file = path.join(CACHE_DIR, `hv_${key}.mp4`);
+      if (!(fs.existsSync(file) && fs.existsSync(file + '.ok'))) {
+        let job = hoverJobs.get(key);
+        if (!job) {
+          job = ensureYtdlp().then(() => runYtdlpSure(['--no-playlist', '--no-part', '--force-overwrites', '-f', '18/worst[ext=mp4][vcodec!=none][acodec!=none]/worst[ext=mp4]/worst',
+            '--download-sections', `*${s0}-${s0 + len}`, '-o', file], u, null, { mobileFirst: /youtu/.test(u), cleanup: () => { try { fs.unlinkSync(file); } catch {} } }))
+            .then(() => { fs.writeFileSync(file + '.ok', ''); })
+            .finally(() => setTimeout(() => hoverJobs.delete(key), 1000));
+          hoverJobs.set(key, job);
+        }
+        try { await job; } catch (e) { return json(res, 502, { error: playError(e.message) }); }
+      }
+      return serveFile(req, res, file);
+    }
+    if (p === '/api/finder/stream') {
+      const u = String(q.get('url') || '');
+      if (!/^https:\/\//i.test(u)) return json(res, 400, { error: 'Not a link.' });
+      const audio = q.get('audio') === '1', job = previewJob(u, audio);
+      if (q.get('check') === '1') {
+        const t0 = Date.now();
+        while (!job.total && !job.done && !job.error && Date.now() - t0 < 60000) await sleep(200);
+        return job.error ? json(res, 502, { error: job.error }) : json(res, 200, { ok: true });
+      }
+      return serveGrowing(req, res, job, audio ? 'audio/mp4' : 'video/mp4');
+    }
+    if (p === '/api/finder/play') {
+      const u = String(q.get('url') || '');
+      if (!/^https:\/\//i.test(u)) return json(res, 400, { error: 'Not a link.' });
+      try {
+        const link = await directStream(u, q.get('audio') === '1');
+        if (q.get('check') === '1') return json(res, 200, { ok: true });
+        res.writeHead(302, { Location: link, 'Cache-Control': 'no-store' }); return res.end();
+      } catch (e) { return json(res, 502, { error: e.message }); }
+    }
+    // the words said in a video, with times: YouTube's own captions (word by word when they're automatic)
+    if (p === '/api/viral') return viral.handle(req, res, q, { json, saveBody });
+    if (p === '/api/long/input' && req.method === 'POST') {
+      const name = safeName(q.get('name'), 'video.mp4'), ext = path.extname(name).toLowerCase();
+      if (!/^\.(mp4|mov|m4v|webm|mkv|avi|flv|ts)$/.test(ext)) return json(res, 400, { error: 'Choose a video file.' });
+      const filename = 'long_' + uid() + ext, file = path.join(CACHE_DIR, filename);
+      try {
+        await saveBody(req, file);
+        return json(res, 200, { name, url: '/cache/' + filename });
+      } catch (error) {
+        fs.unlink(file, () => {});
+        return json(res, 400, { error: error.message });
+      }
+    }
+    if (p === '/api/long/export' && req.method === 'POST') {
+      const b = await readJsonBig(req, 1e6), src = String(b.url || '');
+      const file = /^\/cache\/(?:long|grab)_[\w.-]+$/.test(src) && within(CACHE_DIR, src.slice(7));
+      const start = Number(b.start), end = Number(b.end);
+      if (!file || !fs.existsSync(file) || !(start >= 0 && end > start && end <= 3600 && end - start <= 100)) return json(res, 400, { error: 'This highlight range or video is unavailable.' });
+      const opts = {
+        start, end, name: b.name, filter: typeof b.filter === 'string' ? b.filter : '',
+        capStyle: ['clean', 'boxed', 'yellow'].includes(b.capStyle) ? b.capStyle : 'bold',
+        layout: ['fit', 'stack'].includes(b.layout) ? b.layout : 'full',
+        corner: ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(b.corner) ? b.corner : 'top-left',
+        cues: Array.isArray(b.cues) ? b.cues.slice(0, 800).map((x) => ({ start: +x.start, end: +x.end, text: String(x.text || '').slice(0, 300) }))
+          .filter((x) => x.start >= 0 && x.end > x.start && x.end <= 3601 && x.text) : []
+      };
+      try { return json(res, 200, await docs.exportHighlight(file, opts)); }
+      catch (error) { return json(res, 500, { error: error.message }); }
+    }
+    if (p === '/api/transcript') {
+      const u = String(q.get('url') || '');
+      if (!/^https:\/\//i.test(u)) return json(res, 400, { error: 'Not a link.' });
+      try { return json(res, 200, await linkTranscript(u)); }
+      catch (e) { return json(res, 502, { error: e.message, ...(e.meta || {}) }); }
     }
     if (p === '/api/finder/moment-titles') {
       try { const i = await tpwTitles(); return json(res, 200, { titles: i.titles, memes: i.memes, sports: i.sports, count: i.count }); }
@@ -1796,6 +2453,11 @@ async function handle(req, res) {
     }
     // Settings → Captions and speech: Whisper runs in its own small Python environment (bin/speech)
     if (p === '/api/speech' && req.method === 'GET') return json(res, 200, { ready: transcription.configured(), job: speechJob });
+    // the first-run check: get the downloader now instead of on the first download
+    if (p === '/api/tools/ytdlp' && req.method === 'POST') {
+      try { await ensureYtdlp(); return json(res, 200, { ok: fs.existsSync(YTDLP) }); }
+      catch (e) { return json(res, 200, { ok: false, error: e.message }); }
+    }
     if (p === '/api/speech/setup' && req.method === 'POST') {
       if (!speechJob.busy) setupSpeech().catch(() => {});
       return json(res, 200, { job: speechJob });
@@ -1817,11 +2479,30 @@ async function handle(req, res) {
     if (p === '/api/finder/status') {
       return json(res, 200, { ytdlp: fs.existsSync(YTDLP), pexels: !!config.pexelsKey, pixabay: !!config.pixabayKey });
     }
-    if (p === '/api/finder/keys' && req.method === 'POST') {
-      const body = await readJson(req);
-      for (const k of ['pexelsKey', 'pixabayKey']) if (typeof body[k] === 'string') config[k] = body[k].trim().slice(0, 200) || undefined;
-      saveConfig(); searchCache.clear();
-      return json(res, 200, { pexels: !!config.pexelsKey, pixabay: !!config.pixabayKey });
+    // API keys (Settings → API keys and Find clips): saved only in this PC's config.json; the page only ever
+    // sees whether a key is set and its last 4 characters
+    if (p === '/api/finder/keys' || p === '/api/keys') {
+      const KEYS = ['pexelsKey', 'pixabayKey', 'openverseId', 'openverseSecret'];
+      const view = () => ({ pexels: !!config.pexelsKey, pixabay: !!config.pixabayKey,
+        keys: Object.fromEntries(KEYS.map((k) => [k, config[k] ? `••••${String(config[k]).slice(-4)}` : ''])) });
+      if (req.method === 'POST') {
+        const body = await readJson(req);
+        for (const k of KEYS) if (typeof body[k] === 'string') config[k] = body[k].trim().replace(/\s+/g, '').slice(0, 200) || undefined;
+        if ('openverseId' in body || 'openverseSecret' in body) { ovToken = null; ovDownUntil = 0; }
+        saveConfig(); searchCache.clear();
+      }
+      return json(res, 200, view());
+    }
+    // check a key right away (Settings → API keys → Test)
+    if (p === '/api/keys/test') {
+      const which = q.get('k');
+      try {
+        if (which === 'pexels') await pexelsSearch('city', '', 3, 'video', 1);
+        else if (which === 'pixabay') await pixabaySearch('city', '', 3, 'video', 1);
+        else if (which === 'openverse') { ovToken = null; await openverseAuth(); if (!config.openverseId) throw new Error('Add the Client ID and secret first.'); }
+        else return json(res, 400, { error: 'unknown key' });
+        return json(res, 200, { ok: true });
+      } catch (e) { const m = String(e.message || ''); return json(res, 200, { ok: false, error: /HTTP (401|403)|didn’t accept/.test(m) ? 'That key wasn’t accepted. Check you copied all of it (no spaces), and that the account is confirmed.' : friendlySearchError(m) }); }
     }
     if (p === '/api/finder/search') {
       try {
@@ -1831,8 +2512,10 @@ async function handle(req, res) {
         items = items.map((x) => (x && !x.res && !x.photo && x.w && x.h ? { ...x, res: resClass(x.w, x.h) } : x));
         const want = { hd: 1, '4k': 4 }[q.get('quality')];
         if (want) items = items.filter((x) => !x || x.photo || !x.res || RES_RANK[x.res] >= want);
+        // newest first: whatever knows its date goes by it (mixed Twitch + Kick lists too)
+        if (q.get('newest') === '1' && items.some((x) => x && x.at)) items = items.map((x, k) => [x, k]).sort((A, B) => ((B[0] && B[0].at) || 0) - ((A[0] && A[0].at) || 0) || A[1] - B[1]).map((x) => x[0]);
         const noPaging = ['reddit', 'medal', 'giphy'].includes(src) || (src === 'yarn' && !q.get('q'));
-        return json(res, 200, { items, more: items.length > 0 && !noPaging });
+        return json(res, 200, { items, more: items.length > 0 && !noPaging, note: items[0]?.note || '' });
       }
       catch (e) { console.error('search failed', q.get('source'), e.message); return json(res, 400, { error: friendlySearchError(e.message) }); }
     }
@@ -1916,6 +2599,16 @@ async function handle(req, res) {
     }
 
     // Song previews from hosts that refuse browsers coming from other sites (ccMixter): passed through here
+    // a song preview's sound wave (400 peaks, 0..1), for the song list: free music sites only
+    if (p === '/api/peaks') {
+      const u = q.get('u') || '';
+      let host = '';
+      try { const o = new URL(u); if (o.protocol === 'https:') host = o.hostname.toLowerCase(); } catch {}
+      if (!/(^|\.)(freesound\.org|freemusicarchive\.org|archive\.org|ccmixter\.org)$/.test(host)) return json(res, 400, { error: 'Not a song preview this app knows.' });
+      if (peakCache.has(u)) return json(res, 200, { peaks: peakCache.get(u) });
+      try { const peaks = await songPeaks(u); if (peakCache.size > 500) peakCache.clear(); peakCache.set(u, peaks); return json(res, 200, { peaks }); }
+      catch (e) { return json(res, 502, { error: e.message }); }
+    }
     if (p === '/api/audio') {
       const u = q.get('u') || '';
       if (!/^https:\/\/ccmixter\.org\/content\/[^?#]+\.mp3$/i.test(u)) return json(res, 400, { error: 'Not a song preview this app knows.' });
@@ -1928,6 +2621,29 @@ async function handle(req, res) {
     }
 
     // Where a cached video sits on a still picture (so edits can skip it)
+    // title cards, black screens and text slates (a movie's name on black, "coming soon", a logo card):
+    // the edits skip them. Each frame (4 a second, tiny) is checked for "almost all dark or all light, a few
+    // sharp letters, hardly any colour or mid-tones"
+    if (p === '/api/titlecards') {
+      if (!ffmpegOk) return json(res, 200, { cards: [] });
+      const src = q.get('source') || '';
+      if (!src.startsWith('/cache/')) return json(res, 400, { error: 'Expected a cached video.' });
+      const file = within(CACHE_DIR, src.slice(7));
+      if (!file || !fs.existsSync(file) || !fs.statSync(file).isFile()) return json(res, 400, { error: 'Cached video not found.' });
+      try { return json(res, 200, await findTitleCards(file)); }
+      catch (error) { return json(res, 200, { cards: [], error: error.message }); }
+    }
+    // the streamer's webcam box in a stream video: its edges are straight lines that stay put while the game moves
+    // ?source=/cache/<file>&x&y&w&h (where the face / person was found, 0..1) -> { box: [x, y, w, h] } or { box: null }
+    if (p === '/api/camrect') {
+      const src = q.get('source') || '';
+      if (!ffmpegOk || !src.startsWith('/cache/')) return json(res, 200, { box: null });
+      const file = within(CACHE_DIR, src.slice(7));
+      if (!file || !fs.existsSync(file)) return json(res, 200, { box: null });
+      const f = ['x', 'y', 'w', 'h'].map((k) => Number(q.get(k)));
+      if (f.some((v) => !Number.isFinite(v))) return json(res, 400, { error: 'face box needed' });
+      try { return json(res, 200, { box: await camRect(file, f) }); } catch (e) { return json(res, 200, { box: null, error: e.message }); }
+    }
     if (p === '/api/stills') {
       if (!ffmpegOk) return json(res, 200, { stills: [] });
       const src = q.get('source') || '';
@@ -2019,6 +2735,44 @@ async function handle(req, res) {
       return json(res, 200, { ok: true });
     }
 
+    // shot changes with PySceneDetect (in the speech tools' Python; added there the first time): { cuts: [s, ...] }
+    if (p === '/api/scenes' && req.method === 'POST') {
+      const b = await readJson(req), src = String(b.source || '');
+      const file = src.startsWith('/cache/') ? path.join(CACHE_DIR, path.basename(src)) : src.startsWith('/media/') ? path.join(MEDIA_DIR, path.basename(src)) : null;
+      if (!file || !fs.existsSync(file)) return json(res, 400, { error: 'clip not found' });
+      const out = file + '.scenes.json';
+      if (fs.existsSync(out)) { try { return json(res, 200, JSON.parse(fs.readFileSync(out, 'utf8'))); } catch {} }
+      const py = transcription.python();
+      if (!py) return json(res, 503, { error: 'needs the speech tools' });
+      const runIt = () => new Promise((ok, no) => {
+        const pr = spawn(py, ['-u', path.join(ROOT, 'scenes.py'), file], { windowsHide: true });
+        let o = '', e = ''; const t = setTimeout(() => pr.kill(), 10 * 60000);
+        pr.stdout.on('data', (d) => { o += d; }); pr.stderr.on('data', (d) => { e = (e + d).slice(-1500); });
+        pr.on('error', no); pr.on('close', (code) => { clearTimeout(t); try { ok({ code, j: JSON.parse(o.trim().split(/\r?\n/).pop() || '{}'), e }); } catch { no(new Error('scene detection failed: ' + e.slice(-300))); } });
+      });
+      try {
+        let r = await runIt();
+        if (r.code === 3) { await runQuiet(py, ['-m', 'pip', 'install', '--disable-pip-version-check', '--quiet', 'scenedetect', 'opencv-python-headless']); r = await runIt(); }
+        if (!r.j.cuts) throw new Error(r.j.error || 'no result');
+        fs.writeFileSync(out, JSON.stringify(r.j));
+        return json(res, 200, r.j);
+      } catch (e) { return json(res, 500, { error: e.message }); }
+    }
+    if (p.startsWith('/luts/')) {
+      const name = path.basename(p).replace(/\.png$/, '');
+      if (!LUTS[name]) return json(res, 404, { error: 'unknown look' });
+      try { await ensureModels([[`luts/${name}.png`, `https://gmic.eu/color_presets/${LUTS[name]}.png`]], 'lut_' + name); }
+      catch (e) { return json(res, 502, { error: 'Could not download that film look: ' + e.message }); }
+      return serveFile(req, res, path.join(VISION_DIR, 'luts', name + '.png'));
+    }
+    if (p === '/api/facemodel' && req.method === 'POST') {
+      try { await ensureVision(); await ensureModels(FACE_FILES, 'face'); return json(res, 200, { ok: true }); }
+      catch (e) { return json(res, 500, { error: 'Could not download the face reader: ' + e.message }); }
+    }
+    if (p === '/api/sounds' && req.method === 'POST') {
+      try { await ensureModels(SOUND_FILES, 'sounds'); return json(res, 200, { ok: true }); }
+      catch (e) { return json(res, 500, { error: 'Could not download the sound detector: ' + e.message }); }
+    }
     if (p === '/api/vision' && req.method === 'POST') {
       try { await ensureVision(); return json(res, 200, { ok: true }); }
       catch (e) { return json(res, 500, { error: 'Could not download the face detector: ' + e.message }); }

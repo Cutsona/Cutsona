@@ -1,0 +1,102 @@
+- **Playback fix:** imported and saved clips show video in take previews. Cutsona also closes canceled media requests so they cannot exhaust the engine's open files.
+- **Matching editor controls:** Topic to Video uses the left sidebar, with saved projects on the right. Caption samples update in every mode, and both Quick tabs share Edit Mode's filter picker.
+- **Quick Mode editor:** Topic to video now makes up to **4 different takes** (each its own pictures, camera moves, film look, caption style and song), shown side by side and playing live
+- **A timeline for topic videos:** pictures, captions, voice and music lanes; click any picture to **swap it** (other pictures found for that line, a search, or your own picture or clip), change its camera move (zoom in, zoom out, slide, still), add another picture to the line or remove one, or use it in every take
+- Click a caption on the timeline to rewrite it; change each take's look, caption style and song, and the title, captions, title card and music level for all of them
+- **New takes** gives the other takes new pictures, looks and songs (the one you're on stays); **Export** one take or **Export all**
+- Your edits are kept: **Edit** on any video in "Your quick videos" opens it on the timeline again
+- **Quick Mode** (the third mode, "Topic into a video"): Topic to video and Long video to clips on their own page, with every option in view
+- **Quick Mode → Topic to video:** a 🎲 random topic, **several topics at once** (one per line, made one after another), voice speed, music level, a film look (Portra, Kodachrome, Velvia, Cinema, black & white…), caption styles (Bold, Clean, Boxed, Yellow), captions in another language, and the title card on or off
+- **Your quick videos:** everything you make in Quick Mode is listed in the sidebar: click one to watch it, show it in its folder, or use it in an edit
+- **Quick Mode → Long video to clips:** use Find Clips, a video file, or a pasted link. The left sidebar uses the same menus as the editors. Preview highlights and export one or all within the tab.
+- **Quick Mode → Topic to video:** choose one video length with presets or a custom duration. Research can combine Wikipedia, NASA Science, NASA’s media archive and other matching sources, with scholarly references from Crossref and Europe PMC.
+- **Quick projects:** reopen the takes you already made, even before exporting. Send an editable project to Edit Mode or Clipper Mode with its original cuts, narration, music and captions.
+- Fixed the clip waves blinking (vibrating) about once a second: a clip card that hasn't changed stays as it is
+- Fixed the Find clips preview leaving a strip at the top uncovered
+- The version chip says "Up to date" (not "Can't check") when you have the newest build from your own folder
+- Translation works with the newer caption-translation models too (Spanish to Japanese and others)
+- **Viral searcher:** Cutsona watches each whole video (picture, sound and words) and finds the parts most likely to go viral: hooks in the first seconds, laughs and big reactions, quotable lines, drama, action, and what viewers replay most
+- **Viral scores everywhere:** every take shows its viral score (click it for why, and one-click ways to raise it); every clip shows its own
+- **Most viral** is the new way edits pick moments (Edit → What to use)
+- **Preview before adding your own videos:** a tab for each video, with its viral moments, a heat bar, lit-up viral words in the transcript, and **Smart trim** (or drag the part's edges on the bar) to cut it right there
+- **Find clips preview:** the same viral moments, heat bar and lit-up words for any video you look at
+- Fixed the glowing line flickering at the top of Find clips
+- Fixed a scroll bar that showed up in the Find clips header
+- Fixed "Cannot read properties of null" when finding Twitch clips by game: Cutsona asks Twitch again, and tries the next category a name could mean (gta: Grand Theft Auto V first)
+- **Find clips → Twitch:** Newest shows the latest clips from Twitch’s most-viewed results in the selected time range. If Twitch can't load a category, Cutsona says so.
+- **Quick Mode:** Find clips for any scene, choose a song or your own audio, set a custom duration and use the same time display as Edit and Clipper Mode. Topic videos can use additional research sources and export with a credits file.
+- **Quick Mode takes:** Choose filters, effects, transitions, caption font and placement, a banner or logo, and export quality. Send a take directly to Edit Mode or Clipper Mode.
+- **Virality in every transcript:** lit-up viral words, the best lines marked, the clip's viral moments to click, a heat line on the wave, the part's score, and **Smart trim**
+- **Clips** show a small flame and score next to their name, and a heat line on their wave
+- Click any fire score (or the **?**) for what the fire and the number mean
+- Tall (9:16) videos fit in the preview instead of being cropped; no scroll bar on the preview's tabs
+- Many takes in a short space no longer overlap: effects fold into "all effects" and the pictures shrink to fit
+- **Clipper Mode: Cam only** layout: just the streamer's camera, filling the whole picture
+- **Clipper Mode: every take is a different edit** of the highlight: cam + screen, cam only or full frame, different captions, banner, filter, jump cuts and reaction zooms (Take 1 is your settings; Clipper → Every take → All the same turns it off)
+- Credits: made by slaxr, fully debugged by @slaxr / @gitlist on Instagram
+- **Settings → API keys:** add your Pexels, Pixabay and Openverse keys right in Settings, with a link to get each one, and a Test button
+- **Openverse down?** Find clips now shows openly licensed Wikimedia Commons photos instead (and says so), and your own Openverse keys make it more reliable
+- Kick / Twitch clips in the preview: the right length from the start (no more 2-second parts), and the time bar no longer runs off the side
+- Kick clips get their viral scan too (it read them the wrong way before)
+- Clipper Mode: "Zoom on big reactions" off and "No cuts" now hold on every take (takes only differ in look: captions, banner, filter, and the layout when there is a facecam); gameplay without a streamer on camera stays still instead of following the game's characters
+- Clipper Mode: **Webcam + screen** layout: the webcam cropped out exactly to its own box (Cutsona finds its edges), the screen in the rest
+- **Card motion by dragging:** with a take's settings open (or once it has card keyframes), dragging its picture makes a keyframe at the playhead, so the card glides there (the first one also marks the start)
+- **Find clips:** no more Preview button: Add opens the preview, where you add the part or the whole clip
+- **Smarter preview:** it starts on the most viral part of your length, each length button shows how viral its best part is (the best length is marked), a **Whole clip** button, and with no words the edges snap to shot changes
+- **Edit a clip in its preview:** its gear button or double-clicking its wave opens the clip in the preview: pick which part plays (viral moments, Smart trim, the heat bar, its transcript, Whole clip) and its sound (volume, tone, fades) in the Sound tab
+- Downloads that came out "damaged" now try again another way (one ready-made file with Cutsona's own FFmpeg, or the whole video cut by Cutsona) before giving up
+- **Beat Sync take:** in Edit Mode take 1 is now a plain beat-synced edit: hard cuts on the beat and nothing else (no zooms, flashes, transitions, speed ramps, filter or effects). The other takes get a random style and effect mix every time you generate
+- **Every effect on every take:** a take's Style effects list now shows all the effects there are, not just the ones its style uses; tick any of them to add it to that take
+- **New effects:** Extreme detail, Color boost, Shockwave drops, Slice glitch, Prism split
+- **New filters:** Extreme detail, 4K crisp, Dramatic HDR, Color boost, Bleach bypass, Anime cel, Thermal, Night vision, X-ray, Pencil sketch, 1-bit dither, Prism
+- **New styles:** Hyper Detail (extreme detail, crunchy color, shockwaves on the drops) and Prism Rush (prism splits, slice glitches, whip cuts)
+- **Preview:** 30 s is always one of the length buttons, and you can drag the whole trim part along the bar (its edges still resize it)
+- **Moving cuts on the timeline:** press on a cut and move the mouse (no waiting): a grey ghost of the cut (its picture, number and length) follows the pointer, a yellow line and a "spot N" tag show where it will drop. Let go to drop it, Esc to cancel; a plain click still opens the cut
+- **Preview trim fixes:** a length button near the end of the video now slides the part back so it gets its whole length (it used to come out shorter); a typed length can't run past the end of the video; the length button stays lit after Smart trim; the start can't jump past the end when Smart edges snaps it; both edge handles can be grabbed even on a tiny part of a long video
+- **Fine trim:** a close-up bar of the part (with the viral heat, where lines start and shot changes) to set its exact start and end, or slide it; **Loop part** replays it while you trim; **P** or ▶ plays just the part
+- **Clipper Mode: the webcam crop works now.** Cutsona finds the webcam's own box (the straight edges that stay put while the game moves, with or without a border, in any corner) and puts exactly that box on top, the screen below. It never worked on PCs with a newer FFmpeg (it stopped at an option FFmpeg removed); now it does, and Auto uses the webcam layout whenever a webcam box is found
+- **Preview length fixes:** picking 30s gives about 30s (Smart edges used to stretch it to 41s or more to finish a sentence; now it only goes a few seconds over at most, and Smart trim too)
+- **Fine trim fixes:** the part never spills out of the bar anymore; the close-up stays put while the part fits in it (no jumping back to the middle after you let go); hold the part at an end of the bar to scroll the close-up and keep going
+- **↺ Revert to original** in the preview: back to the whole, untrimmed video (for a clip in your list: nothing cut out and its sound back to normal too)
+- **Timeline works like CapCut now: what's selected is what changes.** Click the **Card** row (or a card ◆) and dragging / scrolling the picture makes a card keyframe at the playhead: move the playhead, change it again, and the card glides between them. Click a **cut** and dragging the picture aims the camera in just that cut; click the **Camera** row and every change is a camera keyframe. Nothing selected: dragging moves the whole take. The selected row lights up, the line under the timeline says what a drag will do, **Esc** unselects
+- Clicking the Card row no longer opens the shot editor (that's what made the clip move instead of the card)
+- **Delete** removes the selected keyframe (card or camera) instead of the whole cut; **[ ]** jump between card keyframes when card motion is selected; card keyframes snap to beats and cuts while you drag them (Alt: no snapping); right-click a card ◆ to set how it moves into the next one (smooth, slow down, speed up, steady, snap) or delete it
+- **Finds the streamer even when they're small:** a facecam or a cut-out of the streamer over a busy screen (like a trading screen) is found now: Cutsona zooms in where faces are too small to see in the whole picture, and the camera follows them
+- **Settings → Updates: Update now** updates right there (Check for updates updates too when there's one)
+- Fixed: **New project** did nothing (an error stopped it)
+- Fixed: a new install started with two Caption Edit takes instead of Movie Edit + Caption Edit
+- Fixed: a clip opened in the preview lit the 15s button even when the whole clip was used
+- Fixed: Next highlight could fail after switching from Clipper Mode to Edit Mode
+- **New look for the header:** the window's own title bar is gone; Cutsona's header is the title bar (drag it to move the window) with a new wordmark
+- **Clipper Mode keyframes save:** with the Card row selected, dragging or scrolling the picture makes a card keyframe; with the Camera row selected, dragging or scrolling the cam or the screen makes a camera keyframe. Both are kept with the take and the project
+- **Timeline remade:** rows with icons, a filmstrip of the footage in every cut, cut fades drawn in, a cleaner playhead, and hints only for the row you selected
+- **Fades for each clip and each cut:** in a clip's preview (Picture fades: None, Soft, Dip, In only, Slow or your own seconds) and on any cut (right-click the FX row). Cuts that carry on the same moment don't fade in between
+- **Photos stay up for their own time:** Auto (a few beats of the song) or 1s / 2s / 3s / your own seconds, per photo
+- **Song downloads show their progress** in the song box, like videos
+- **+ Own clip** puts anything from Find clips, or a GIF from GIPHY, into the edit at the playhead once it's ready
+- **Find clips → Newest:** the latest clips and uploads first (Twitch, Kick, YouTube, Shorts, news, Dailymotion)
+- **🎲 Random** in Find clips: Edit Mode grabs random movies, shows, anime, Shorts, viral videos or news (and a song) and makes takes of them; Clipper Mode grabs a random Twitch or Kick stream clip
+- **Your own logo on the stream banner** (Edit → Banner → Logo), in place of the platform's name
+- **Autosave and recover:** new projects save themselves once their clips are in; if Cutsona closes while you're editing, it offers to open where you left off; after an update your edit opens again
+- **First-run walkthrough** (add clips, add a song, pick a take, export) and a check of what's installed with one-click installs (Settings → Help)
+- **Speech tools in one click:** no Python needed anymore; Cutsona gets its own
+- **Report a problem:** when something goes wrong, a small "Send a report" button; you see the report and copy it, save it or open it on GitHub (nothing is sent by itself)
+- Playing a video in a preview pauses the takes
+- The preview of a video can't be changed until it has loaded
+- A slow computer opens two takes instead of one (one without a graphics chip), and keeps the rest of your lineup for later
+- Speed ramps are set once (in the style's effects), no more "custom" badges on takes (a dot on the settings button instead), and fewer explanation lines everywhere (they're in the tooltips now)
+- Releases can be signed: see RELEASING.md
+- **In order mode uses the whole video:** an in-order edit now follows the entire clip from its first second (not just a few "best moments" over and over), every take takes its own path through it, and it always runs the full length you set (it used to stop short, e.g. 12 s of a 30 s edit)
+- Find clips (and other full-window panels) no longer slide under the window's minimize / maximize / close buttons
+- **Topic to video:** type a topic (or pick a folder of your pictures and clips) and Cutsona makes a whole narrated video: a script from Wikipedia (or your own, every scene editable), a natural voice (or a Windows voice), pictures and clips for every line with slow camera moves, background music that dips under the voice, captions and a title. 1 to 10 minutes, for YouTube (16:9) or Shorts / Reels (9:16). It all runs on your PC
+- **Captions from a subtitle file:** drop an .srt or .vtt file and its lines become the words of the video with the same name (no speech tools needed)
+- **Version in the header:** the version you have and whether it's the newest (click it to check again, or to update when one is ready)
+- **Clipper Mode walkthrough:** shows the first time you open Clipper Mode (and in Settings → Help)
+- **Long video to clips:** paste a podcast, stream VOD or YouTube video (up to an hour); Cutsona watches all of it in Clipper Mode, every take is one of its best moments (15, 30, 45 or 60 s), and Export all saves every one
+- **Smarter clips with open-source models (free, on your PC):** YAMNet (Google) listens to every clip for laughter, cheering, applause, screaming, gasps and big hits, so highlights and edits land on the moments people react to (clips show "3 reactions heard"; a highlight can say "You can hear laughter"). VADER scores how strongly each line feels, so emotional lines rank higher as quotes and highlights. Both download once (about 15 MB)
+- The walkthrough no longer points at something that isn't on screen yet
+- **Captions in any language:** Cutsona hears what language a clip speaks (99 languages; English clips still use the more accurate English model) and can show the captions in another one (Edit → Captions → Captions in), translated on your PC with Argos Translate's open-source models (each language downloads once, about 100 MB). Chinese, Japanese, Thai, Arabic, Hebrew, Hindi and Korean captions get fonts that have their letters
+- **Silent reactions count:** MediaPipe Face Landmarker reads the streamer's face (mouth dropping open, big smile, eyebrows up, wide eyes), so a reaction without a word is a highlight too
+- **Cleaner cuts:** Silero VAD finds exactly where the voice starts and stops, so "Cut pauses" cuts right at its edges and keeps laughs and gasps between words
+- **Exact shot changes:** PySceneDetect finds every cut in movie and TV clips (added to the speech tools the first time), so edits cut between shots, never a frame into the next one
+- **Film looks:** 10 open-source film emulations in the filters: Kodachrome 64, Velvia 50, Portra 400, Superia 400, Polaroid, Cinema print 2383, Fuji print 3510, Tri-X and HP5 black and white, and Anime colors (each downloads once, a few hundred KB)

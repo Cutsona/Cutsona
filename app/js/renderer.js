@@ -7,11 +7,12 @@ void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }`;
 const FS = `#version 300 es
 precision highp float;
 in vec2 vUv; out vec4 outColor;
-uniform sampler2D uTex, uTextTex, uCaptionTex, uHookTex;
+uniform sampler2D uTex, uTextTex, uCaptionTex, uHookTex, uLut;
+uniform float uLutAmt;
 uniform float uCaption, uHook, uHookScale;
 uniform vec2 uHookAnchor;
 uniform vec4 uGameFill;
-uniform float uGameWhole;
+uniform float uGameWhole, uOutside;
 uniform vec2 uTexSize, uRes, uOffset, uTilt, uCrop, uBlur;
 uniform vec4 uSourceRect, uCamRect, uGameRect;
 uniform float uStack, uStackY;
@@ -19,7 +20,8 @@ uniform vec3 uTint, uDuoA, uDuoB;
 uniform float uZoom, uRot, uCard, uFit, uRGB, uRadial, uGlitch, uFlash, uInvert, uBW, uContrast, uSat, uBright, uHue,
   uVignette, uGrain, uScan, uGlow, uMirror, uGhosts, uBars, uRound, uShadow, uWrap, uTime, uText, uTextScale, uHasTex,
   uPixel, uPoster, uFish, uWave, uCRT, uKaleido, uBleed, uEdge, uInk, uHalftone, uDuo, uSepia, uLeak, uFilm, uSplit, uFade, uFocus,
-  uPixDisp, uPrint, uStars, uMosh, uTrack, uSharp;
+  uPixDisp, uPrint, uStars, uMosh, uTrack, uSharp,
+  uDetail, uThermal, uSketch, uDither, uPrism, uSlice, uShock, uChroma;
 
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 mat3 rotX(float a){ float c=cos(a), s=sin(a); return mat3(1.,0.,0., 0.,c,s, 0.,-s,c); }
@@ -30,6 +32,22 @@ vec4 sourceLod(vec2 uv, float lod){ return textureLod(uTex, sourceUV(uv), lod); 
 vec3 tex(vec2 uv){ return texture(uTex, sourceUV(uv)).rgb; }
 
 vec3 fx(vec2 uv){
+  // Slice glitch: thick horizontal slices of the picture slide sideways, re-cut 12 times a second
+  if (uSlice > 0.001) {
+    float t = floor(uTime * 12.0);
+    float n = 6.0 + floor(hash(vec2(t, 3.1)) * 10.0);
+    float row = floor(uv.y * n);
+    float h = hash(vec2(row, t));
+    uv.x += step(0.55, h) * (hash(vec2(row + 9.0, t)) - 0.5) * 0.22 * uSlice;
+  }
+  // Shockwave: a ring of warped picture rushing out from the middle (set by the beat)
+  if (uShock > 0.001) {
+    vec2 a = vec2(uTexSize.x / max(uTexSize.y, 1.0), 1.0);
+    vec2 d = (uv - 0.5) * a;
+    float r = length(d), front = (1.0 - uShock) * 0.95;
+    float ring = exp(-pow((r - front) * 14.0, 2.0)) * uShock;
+    uv -= (r > 1e-4 ? d / r : vec2(0.0)) / a * ring * 0.045;
+  }
   if (uGlitch > 0.001) {
     float t = floor(uTime * 24.0);
     float row = floor(uv.y * 22.0);
@@ -75,6 +93,11 @@ vec3 fx(vec2 uv){
     vec2 j1 = (vec2(hash(vec2(fr, 1.0)), hash(vec2(fr, 2.0))) - 0.5) * 0.007 * uPrint;
     vec2 j2 = (vec2(hash(vec2(fr, 3.0)), hash(vec2(fr, 4.0))) - 0.5) * 0.007 * uPrint;
     c = vec3(tex(uv + j1 + vec2(uRGB, 0.0)).r, tex(uv).g, tex(uv + j2 - vec2(uRGB, 0.0)).b);
+  } else if (uPrism > 0.001) {
+    // Prism: the picture split into red / green / blue copies that fan out from the middle
+    vec2 d = (uv - 0.5) * 0.018 * uPrism, w = vec2(uRGB, 0.0);
+    c = vec3(tex(uv + d + w).r, tex(uv).g, tex(uv - d - w).b);
+    c = mix(c, (tex(uv + d * 2.0).rgb + tex(uv - d * 2.0).rgb) * 0.5, 0.12 * min(uPrism, 1.0));
   } else if (uRGB > 0.0005) {
     vec2 d = vec2(uRGB, uRGB * 0.35);
     c = vec3(tex(uv + d).r, tex(uv).g, tex(uv - d).b);
@@ -118,6 +141,17 @@ void main(){
   }
   vec3 col;
   if (uStack > 0.5) {
+    // card motion on a stream clip: the whole two-panel picture moves / turns / sizes as one card
+    float cardIn = 1.0;
+    if (abs(uCard - 1.0) > 0.0005 || abs(uOffset.x) + abs(uOffset.y) > 0.0005 || abs(uRot) > 0.0005) {
+      vec2 cq = (suv - 0.5) * vec2(oa, 1.0) - uOffset;
+      float cr = cos(-uRot), sr = sin(-uRot);
+      cq = mat2(cr, sr, -sr, cr) * cq / max(uCard, 0.05);
+      vec2 hs = vec2(oa, 1.0) * 0.5;
+      float csd = sdBox(cq, hs, uCard < 0.999 ? 0.03 : 0.0);
+      cardIn = clamp(0.5 - csd / (1.5 / uRes.y), 0.0, 1.0);
+      suv = cq / vec2(oa, 1.0) + 0.5;
+    }
     // stream clip: the streamer's cam on top, the gameplay below (two crops of the same video)
     float yy = 1.0 - suv.y;
     bool topP = yy < uStackY;
@@ -127,11 +161,16 @@ void main(){
     // "whole screen": the full stream picture fits its panel; the space around it is a dimmed, blurred copy
     // uGameWhole: 1 = the bottom panel shows the whole screen, 2 = the top one (sides swapped)
     bool wholeHere = (uGameWhole > 0.5 && uGameWhole < 1.5 && !topP) || (uGameWhole > 1.5 && topP);
-    if (wholeHere && (sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0 || sp.y > 1.0)) {
-      vec2 q = uGameFill.xy + vec2(suv.x, ly) * uGameFill.zw;
-      col = textureLod(uTex, sourceUV(q), 5.5).rgb * 0.45;
+    if (sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0 || sp.y > 1.0) {
+      // outside the picture: black bars, or (whole screen with "Blurred") a dimmed, blurred copy behind it.
+      // Never a mirrored copy of the video.
+      if (wholeHere && uOutside < 0.5) {
+        vec2 q = uGameFill.xy + vec2(suv.x, ly) * uGameFill.zw;
+        col = textureLod(uTex, sourceUV(q), 5.5).rgb * 0.45;
+      } else col = vec3(0.0);
     } else col = sampleFx(sp);
     if (uHasTex < 0.5) col = vec3(0.04);
+    col = mix(vec3(0.03), col, cardIn);
   } else {
   // pixelate
   if (uPixel > 0.0005) { vec2 cells = vec2(oa, 1.0) / uPixel; suv = (floor(suv * cells) + 0.5) / cells; }
@@ -192,6 +231,7 @@ void main(){
   vec2 buv = vec2(bq.x / (2.0 * bh.x) + 0.5, 0.5 - bq.y / (2.0 * bh.y));
   vec3 bg = (sourceLod(buv, 5.0).rgb * 0.6 + sourceLod(buv + vec2(0.01, 0.0), 6.0).rgb * 0.4) * 0.42;
   bg *= 1.0 - uShadow * 0.85 * exp(-max(sd, 0.0) * 18.0);
+  if (uOutside > 0.5) bg = vec3(0.0); // black bars around the whole video
 
   // echo layers ("dimension" ghosts)
   if (uGhosts > 0.0 && inside < 1.0 && front) {
@@ -217,6 +257,31 @@ void main(){
       vec3 nb = (sourceLod(uv + vec2(sp.x, 0.0), 0.0).rgb + sourceLod(uv - vec2(sp.x, 0.0), 0.0).rgb
         + sourceLod(uv + vec2(0.0, sp.y), 0.0).rgb + sourceLod(uv - vec2(0.0, sp.y), 0.0).rgb) * 0.25;
       fg = clamp(fg + (fg - nb) * uSharp * 1.6, 0.0, 1.0);
+    }
+    // Extreme detail: every texture pulled out. Local contrast against two blur sizes (fine + wide),
+    // the way "clarity" / "structure" sliders work, then the tones pushed back so nothing clips
+    if (uDetail > 0.001) {
+      vec3 W = vec3(0.299, 0.587, 0.114);
+      vec3 b1 = sourceLod(uv, 1.2).rgb, b2 = sourceLod(uv, 3.2).rgb;
+      float lf = dot(fg, W), l1 = dot(b1, W), l2 = dot(b2, W);
+      float dFine = lf - l1, dWide = l1 - l2;
+      float gain = uDetail * (1.0 - 0.6 * abs(lf - 0.5) * 2.0);
+      float nl = clamp(lf + dFine * 2.6 * gain + dWide * 1.5 * gain, 0.0, 1.0);
+      fg = clamp(fg * (nl / max(lf, 0.02)), 0.0, 1.0);
+      fg = mix(fg, fg * fg * (3.0 - 2.0 * fg), 0.35 * uDetail);
+    }
+    if (uSketch > 0.001) {
+      // Pencil sketch: dark strokes where the picture changes, on paper
+      vec2 px3 = 1.0 / max(uTexSize, vec2(1.0));
+      vec3 W = vec3(0.299, 0.587, 0.114);
+      float c0 = dot(sourceLod(uv, 0.0).rgb, W), cb = dot(sourceLod(uv, 2.5).rgb, W);
+      float dodge = clamp(c0 / max(cb + 0.04, 0.05), 0.0, 1.0);
+      float gx = dot(sourceLod(uv + vec2(px3.x * 1.5, 0.0), 0.0).rgb - sourceLod(uv - vec2(px3.x * 1.5, 0.0), 0.0).rgb, W);
+      float gy = dot(sourceLod(uv + vec2(0.0, px3.y * 1.5), 0.0).rgb - sourceLod(uv - vec2(0.0, px3.y * 1.5), 0.0).rgb, W);
+      float ln = 1.0 - clamp(length(vec2(gx, gy)) * 4.0, 0.0, 1.0);
+      float hatch = 0.92 + 0.08 * sin((uv.x + uv.y) * uTexSize.y * 0.7);
+      vec3 paper = vec3(0.97, 0.95, 0.9) * min(dodge, ln) * mix(1.0, hatch, 1.0 - dodge);
+      fg = mix(fg, paper, uSketch);
     }
     if (uGlow > 0.0) { vec3 g = sourceLod(uv, 3.5).rgb; fg += max(g - 0.55, 0.0) * uGlow * 1.6; }
     if (uEdge > 0.001 || uInk > 0.001) {
@@ -253,6 +318,22 @@ void main(){
     col = mix(col, sp, uSepia);
   }
   if (uDuo > 0.001) col = mix(col, mix(uDuoA, uDuoB, smoothstep(0.05, 0.95, dot(col, vec3(0.299, 0.587, 0.114)))), uDuo);
+  // Thermal camera: brightness mapped to a heat palette (black, purple, red, orange, yellow, white)
+  if (uThermal > 0.001) {
+    float h = clamp(dot(col, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+    vec3 th = h < 0.25 ? mix(vec3(0.02, 0.0, 0.08), vec3(0.35, 0.0, 0.55), h / 0.25)
+      : h < 0.5 ? mix(vec3(0.35, 0.0, 0.55), vec3(0.9, 0.08, 0.2), (h - 0.25) / 0.25)
+      : h < 0.75 ? mix(vec3(0.9, 0.08, 0.2), vec3(1.0, 0.62, 0.0), (h - 0.5) / 0.25)
+      : mix(vec3(1.0, 0.62, 0.0), vec3(1.0, 1.0, 0.85), (h - 0.75) / 0.25);
+    col = mix(col, th, uThermal);
+  }
+  // Chroma boost: colors pushed hard, skin and greys left alone
+  if (uChroma > 0.001) {
+    float lc = dot(col, vec3(0.299, 0.587, 0.114));
+    vec3 ch = col - lc;
+    float satNow = length(ch);
+    col = lc + ch * (1.0 + uChroma * 1.4 * smoothstep(0.02, 0.25, satNow));
+  }
   if (uPoster > 1.5) col = floor(clamp(col, 0.0, 1.0) * uPoster + 0.5) / uPoster;
   // comic halftone dots
   if (uHalftone > 0.001) {
@@ -265,6 +346,16 @@ void main(){
     col = mix(col, mix(col * 1.2 + 0.08, col * 0.15, m), uHalftone);
   }
   col = col * (1.0 + min(uBright, 0.0)) + max(uBright, 0.0);
+  // 1-bit dither: ordered (Bayer) dots like an old Game Boy / Mac screen
+  if (uDither > 0.001) {
+    vec2 dp = floor(vUv * uRes / max(1.0, uRes.y / 360.0));
+    int bi = int(mod(dp.y, 4.0)) * 4 + int(mod(dp.x, 4.0));
+    float BAY[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    float bay = (BAY[bi] + 0.5) / 16.0;
+    float lum = dot(clamp(col, 0.0, 1.0), vec3(0.299, 0.587, 0.114));
+    vec3 ink = vec3(0.06, 0.07, 0.1), pap = vec3(0.86, 0.93, 0.8);
+    col = mix(col, mix(ink, pap, step(bay, lum)), uDither);
+  }
   // PrintAnimate: limited inks on paper, with a dot screen that shifts every printed frame
   if (uPrint > 0.001) {
     float fr = floor(uTime * 8.0);
@@ -308,6 +399,15 @@ void main(){
     col = mix(col, vec3(0.05), dust * uFilm);
     col *= 1.0 - uFilm * 0.06 * hash(vec2(fr, 5.0));
   }
+  // a film look (a 64x64x64 colour table, 8x8 tiles of blue slices)
+  if (uLutAmt > 0.001) {
+    vec3 cc = clamp(col, 0.0, 1.0);
+    float lb = cc.b * 63.0, l0 = floor(lb), l1 = min(l0 + 1.0, 63.0);
+    vec2 lrg = cc.rg * 63.0 + 0.5;
+    vec3 la = texture(uLut, (vec2(mod(l0, 8.0), floor(l0 / 8.0)) * 64.0 + lrg) / 512.0).rgb;
+    vec3 lc = texture(uLut, (vec2(mod(l1, 8.0), floor(l1 / 8.0)) * 64.0 + lrg) / 512.0).rgb;
+    col = mix(col, mix(la, lc, lb - l0), uLutAmt);
+  }
   col = mix(col, 1.0 - col, uInvert);
   col = mix(col, vec3(1.0), clamp(uFlash, 0.0, 1.0));
   vec2 vq = (vUv - 0.5) * vec2(oa, 1.0) / max(oa, 1.0);
@@ -340,11 +440,37 @@ void main(){
 const EXTRA_UNIFORMS = [['uSharp', 'sharp'], ['uPixel', 'pixel'], ['uPoster', 'poster'], ['uFish', 'fish'], ['uWave', 'wave'], ['uCRT', 'crt'], ['uKaleido', 'kaleido'],
   ['uBleed', 'bleed'], ['uEdge', 'edge'], ['uInk', 'ink'], ['uHalftone', 'halftone'], ['uDuo', 'duo'], ['uSepia', 'sepia'], ['uLeak', 'leak'],
   ['uFilm', 'film'], ['uSplit', 'split'], ['uFade', 'fade'], ['uFocus', 'focus'],
-  ['uPixDisp', 'pixdisp'], ['uPrint', 'print'], ['uStars', 'stars'], ['uMosh', 'mosh'], ['uTrack', 'track']];
+  ['uPixDisp', 'pixdisp'], ['uPrint', 'print'], ['uStars', 'stars'], ['uMosh', 'mosh'], ['uTrack', 'track'],
+  ['uDetail', 'detail'], ['uThermal', 'thermal'], ['uSketch', 'sketch'], ['uDither', 'dither'], ['uPrism', 'prism'], ['uSlice', 'slice'], ['uShock', 'shock'], ['uChroma', 'chroma']];
 
+// film looks (open-source HaldCLUT film emulations, see server.js LUTS): fetched once, converted once, shared
+const lutCache = new Map();
+function lutData(name) {
+  if (!lutCache.has(name)) {
+    const p = (async () => {
+      const img = new Image(); img.src = `/luts/${name}.png`; await img.decode();
+      const W = img.naturalWidth, H = img.naturalHeight, L = Math.round(Math.cbrt(W)), N = L * L;
+      if (L * L * L !== W || W !== H) throw new Error('not a HaldCLUT');
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0);
+      const src = g.getImageData(0, 0, W, H).data, out = new Uint8Array(512 * 512 * 4);
+      const at = (r, gg, b) => { const i = r + gg * N + b * N * N; return ((Math.floor(i / W)) * W + (i % W)) * 4; };
+      for (let b = 0; b < 64; b++) for (let gg = 0; gg < 64; gg++) for (let r = 0; r < 64; r++) {
+        const k = at(Math.round(r * (N - 1) / 63), Math.round(gg * (N - 1) / 63), Math.round(b * (N - 1) / 63));
+        const o = (((Math.floor(b / 8)) * 64 + gg) * 512 + (b % 8) * 64 + r) * 4;
+        out[o] = src[k]; out[o + 1] = src[k + 1]; out[o + 2] = src[k + 2]; out[o + 3] = 255;
+      }
+      return out;
+    })();
+    p.catch(() => lutCache.delete(name));
+    lutCache.set(name, p);
+  }
+  return lutCache.get(name);
+}
 export class Renderer {
-  constructor(canvas, { preview = false } = {}) {
+  constructor(canvas, { preview = false, onLutReady } = {}) {
     this.preview = preview;
+    this.onLutReady = onLutReady;
     this.canvas = canvas;
     const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, premultipliedAlpha: false, preserveDrawingBuffer: !preview, powerPreference: 'high-performance' });
     if (!gl) throw new Error('WebGL2 is not available in this browser.');
@@ -373,6 +499,8 @@ export class Renderer {
     gl.uniform1i(this.loc.uTextTex, 1);
     gl.uniform1i(this.loc.uCaptionTex, 2);
     if (this.loc.uHookTex) gl.uniform1i(this.loc.uHookTex, 3);
+    if (this.loc.uLut) gl.uniform1i(this.loc.uLut, 5);
+    this.lutTex = this._makeTex(true); this.lutName = ''; this.lutReady = false;
     this.texCache = new Map();
     this.textTex = this._makeTex(false);
     this.textVersion = -1;
@@ -398,8 +526,8 @@ export class Renderer {
   // Upload the current frame of a <video> (returns false if nothing to show yet)
   upload(video) {
     const gl = this.gl;
-    const w = video.videoWidth, h = video.videoHeight;
-    if (!w || video.readyState < 2) return this.texCache.has(video);
+    const w = video.videoWidth || video.naturalWidth || video.width, h = video.videoHeight || video.naturalHeight || video.height;
+    if (!w || (video.readyState != null && video.readyState < 2)) return this.texCache.has(video);
     let e = this.texCache.get(video);
     if (!e) { e = { tex: this._makeTex(true), w: 0, h: 0 }; this.texCache.set(video, e); }
     gl.activeTexture(gl.TEXTURE0);
@@ -437,6 +565,23 @@ export class Renderer {
     this.hasHook = !!canvas;
   }
 
+  // film looks: a HaldCLUT picture (any size) turned into a 64³ table laid out as 8x8 tiles of 64x64 (512x512)
+  setLut(name) {
+    this.lutName = name; this.lutReady = false;
+    if (!name) return;
+    lutData(name).then((data) => {
+      if (this.lutName !== name || !data) return;
+      const gl = this.gl;
+      gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.activeTexture(gl.TEXTURE0);
+      this.lutReady = true; this.dirty = true;
+      this.onLutReady?.();
+    }).catch(() => {});
+  }
   forget(video) {
     const e = this.texCache.get(video);
     if (e) { this.gl.deleteTexture(e.tex); this.texCache.delete(video); }
@@ -445,13 +590,22 @@ export class Renderer {
   // show = false hides captions for this frame (Movie Edit: subtitles only on the opening line of dialogue)
   setCaption(clip, sourceTime, settings, show = true) {
     const o = captionOpts(settings.captionStyle), phrase = o.word ? 'word' : !!o.phrase;
-    const caption = show && settings.captions === 'on' ? captionAt(clip?.words, sourceTime, phrase) : null;
+    // captions in the language you picked (translated words) when there are, else the words as spoken
+    const caption = show && settings.captions === 'on' ? captionAt(clip?.capWords || clip?.words, sourceTime, phrase) : null;
+    this._drawCaption(caption, `${clip?.id || clip?.url}|${clip?.capLang || ''}|${phrase}`, settings);
+  }
+  setTimelineCaption(quick, time, settings) {
+    const cue = settings.captions === 'on' && quick.captions.find((x) => time >= x.start && time < x.end);
+    const caption = cue ? { index: cue.start, group: { words: cue.text.split(/\s+/).map((text) => ({ text })) } } : null;
+    this._drawCaption(caption, cue?.text || '', { ...settings, captionY: settings.captionY ?? quick.captionY }, quick.captionScale);
+  }
+  _drawCaption(caption, identity, settings, scale = 1) {
     this.captionVisible = !!caption;
     if (!caption) return;
     const aspect = this.canvas.width / this.canvas.height;
-    const key = `${clip.id || clip.url}|${phrase}${caption.index}|${settings.captionStyle}|${settings.captionFont}|${aspect}|${settings.captionY ?? ''}`;
+    const key = `${identity}|${caption.index}|${settings.captionStyle}|${settings.captionFont}|${aspect}|${settings.captionY ?? ''}|${settings.captionX ?? ''}|${scale}`;
     if (key === this.captionVersion) return;
-    const canvas = drawCaptionCanvas(caption, aspect, settings.captionStyle, settings.captionFont, settings.captionY ?? null);
+    const canvas = drawCaptionCanvas(caption, aspect, settings.captionStyle, settings.captionFont, settings.captionY ?? null, settings.captionX ?? null, scale);
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.captionTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
@@ -494,10 +648,14 @@ export class Renderer {
     f('uText', this.hasText ? (U.text > 0 ? U.text : 1) : 0); f('uTextScale', U.textScale || 1);
     f('uHook', this.hasHook ? U.hook || 0 : 0); f('uHookScale', U.hookScale || 1);
     if (L.uHookAnchor) gl.uniform2f(L.uHookAnchor, ...(U.hookAnchor || [0.5, 0.8]));
-    f('uGameWhole', U.gameWhole || 0);
+    f('uGameWhole', U.gameWhole || 0); f('uOutside', U.outside || 0);
     if (L.uGameFill) gl.uniform4f(L.uGameFill, ...(U.gameFill || [0, 0, 1, 1]));
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.captionTex); gl.activeTexture(gl.TEXTURE0);
     f('uCaption', this.captionVisible ? 1 : 0);
+    // the film look's colour table (loaded once, then kept)
+    if (U.lut !== this.lutName) this.setLut(U.lut || '');
+    f('uLutAmt', this.lutReady && U.lut ? (U.lutAmt ?? 1) : 0);
+    if (this.lutReady) { gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, this.lutTex); gl.activeTexture(gl.TEXTURE0); }
     for (const k of EXTRA_UNIFORMS) f(k[0], U[k[1]] || 0);
     const da = U.duoA || [0, 0, 0], db = U.duoB || [1, 1, 1];
     if (L.uDuoA) gl.uniform3f(L.uDuoA, da[0], da[1], da[2]);

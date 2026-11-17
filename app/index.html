@@ -9,12 +9,13 @@
 <link rel="icon" href="brand/icon-192.png" sizes="192x192" type="image/png">
 <link rel="apple-touch-icon" href="brand/icon-192.png">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="ui2.css">
 </head>
 <body>
 <header class="top">
   <div class="brand">
     <img class="logo" src="brand/icon.svg" alt="" width="26" height="26">
-    <span class="brand-name">Cutsona</span>
+    <span class="brand-name" aria-label="Cutsona"><b>Cut</b><i aria-hidden="true"></i><span>sona</span></span>
   </div>
   <button class="proj-btn" id="btnProject" title="Projects: save this one, open another, or start a new one (Ctrl+S saves, Ctrl+O opens)"><span id="projName">Untitled project</span><small id="projState" class="proj-state"></small></button>
   <div class="status" id="status"></div>
@@ -23,6 +24,10 @@
     <button class="ghost icon-only" id="btnUndo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></button>
     <button class="ghost icon-only" id="btnRedo" title="Redo (Ctrl+Y)" aria-label="Redo" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg></button>
     <button class="ghost" id="btnFolder" title="Open the folder your videos are saved in">Exports folder</button>
+    <div class="sz-pick">
+      <button class="ghost sz-eye" id="btnSafe" title="Safe zones: see TikTok, Reels or Shorts on top of every tall take (previews only, never exported)" aria-label="Safe zones" aria-haspopup="menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="sz-slash" d="M4 4l16 16"/></svg><span id="safeName"></span></button>
+      <div class="sz-menu" id="safeMenu" role="menu" hidden></div>
+    </div>
     <button class="ghost icon-only" id="btnSettings" title="Settings: export folder, theme, accent color" aria-label="Settings"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
     <button class="ghost stream-only" id="btnExportAll" disabled title="Export every highlight Cutsona found, one after another">Export all</button>
     <button class="primary" id="btnGenerate" disabled>New takes <kbd>G</kbd></button>
@@ -32,9 +37,12 @@
 <main class="layout">
   <aside class="side">
     <div class="mode-switch" id="modeSwitch" role="tablist" aria-label="What are you making?">
-      <button data-mode="edits"><b>Edits</b><small>Cut to a song</small></button>
-      <button data-mode="stream"><b>Stream clips</b><small>Twitch and Kick highlights</small></button>
+      <button data-mode="edits"><b>Edit Mode</b><small>Make edits of anything</small></button>
+      <button data-mode="stream"><b>Clipper Mode</b><small>Twitch and Kick highlights</small></button>
+      <button data-mode="quick"><b>Quick Mode</b><small>Topic into a video</small></button>
     </div>
+    <div class="quick-side" id="quickSide"></div>
+    <div class="quick-side" id="quickLongSide" hidden></div>
     <section class="panel">
       <div class="panel-h">
         <h3><span class="step">1</span> Clips</h3>
@@ -55,7 +63,7 @@
       <div class="panel-h">
         <h3><span class="step">2</span> Music</h3>
         <div class="panel-actions">
-          <button class="small" id="btnRemoveMusic" hidden>Remove</button>
+          <button class="small primary-act" id="btnEditMusic" hidden aria-label="Song settings" title="Song settings: its sound (volume, bass, treble, fades) and which part plays (start, length, drops). Double-click the song's wave works too"><svg class="gear" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button><button class="small" id="btnRemoveMusic" hidden>Remove</button>
           <button class="small" id="btnAddMusic">Choose song</button>
         </div>
       </div>
@@ -76,20 +84,21 @@
       </div>
     </section>
 
+    <section class="panel" id="quickTracks" hidden></section>
     <section class="panel" id="editPanel">
       <div class="panel-h"><h3><span class="step">3</span> <span id="editTitle">Edit</span></h3></div>
       <div class="lock-note" id="lockNote">Add a clip or a song first: then everything here unlocks.</div>
       <fieldset class="lockable" id="editFields">
       <div class="field">
         <span id="lenLabel">Length</span>
-        <div class="seg" id="segLength" data-key="length">
+        <div class="seg" id="segLength" data-key="length" data-dd-empty="Custom length">
           <button data-v="7">7s</button><button data-v="10">10s</button><button data-v="15">15s</button><button data-v="20">20s</button><button data-v="30">30s</button><button data-v="45">45s</button><button data-v="60">60s</button>
           <button data-v="match" class="seg-wide" title="As long as your clips, without the dead video">Match clip</button>
         </div>
       </div>
       <div class="field">
         <span>Format</span>
-        <div class="seg wrap4" id="segFormat" data-key="format">
+        <div class="seg wrap4" id="segFormat" data-key="format" data-dd-empty="Custom (below)">
           <button data-v="9:16" title="TikTok, Reels, Shorts">9:16</button><button data-v="4:5" title="Instagram feed">4:5</button><button data-v="1:1" title="Square">1:1</button><button data-v="16:9" title="YouTube">16:9</button>
           <button data-v="3:4" title="Tall photo">3:4</button><button data-v="4:3" title="Classic TV">4:3</button><button data-v="2:3" title="Pinterest">2:3</button><button data-v="21:9" title="Cinema widescreen">21:9</button>
         </div>
@@ -115,7 +124,8 @@
         <span>Effect intensity <em id="intensityVal"></em></span>
         <input type="range" id="intensity" min="0" max="2" step="0.05">
       </label>
-      <div class="two edit-only">
+      <!-- the song's volume is in Music → Edit, the clips' level in a clip's Audio panel -->
+      <div class="two edit-only" hidden>
         <label class="field"><span>Music volume <em id="musicVolVal"></em></span><input type="range" id="musicVol" min="0" max="1" step="0.05"></label>
         <label class="field"><span>Clip audio <em id="clipVolVal"></em></span><input type="range" id="clipVol" min="0" max="1" step="0.05"></label>
       </div>
@@ -140,6 +150,17 @@
     </section>
   </aside>
 
+  <section class="quick-view" id="quickView">
+    <div class="qv-tabs" role="tablist">
+      <button data-qt="topic" class="on"><b>Topic to video</b><small>Script, voice, pictures, music and captions from just a topic</small></button>
+      <button data-qt="long"><b>Long video to clips</b><small>A podcast, stream VOD or YouTube video cut into its best clips</small></button>
+    </div>
+    <div class="qv-body" id="qvTopic" data-qt="topic">
+      <div id="qvTopicWork"></div><aside class="panel qv-saved" id="quickProjects" aria-label="Saved Quick projects"></aside>
+    </div>
+    <div class="qv-body" id="qvLong" data-qt="long" hidden></div>
+  </section>
+
   <section class="stage">
     <div class="empty" id="empty">
       <div class="empty-inner">
@@ -148,15 +169,16 @@
           <div class="blank"><div class="clapper"></div><div class="blank-slate"><small>Take</small><b>2</b></div><div class="blank-screen"></div></div>
           <div class="blank"><div class="clapper"></div><div class="blank-slate"><small>Take</small><b>3</b></div><div class="blank-screen"></div></div>
           <div class="blank"><div class="clapper"></div><div class="blank-slate"><small>Take</small><b>4</b></div><div class="blank-screen"></div></div>
+          <div class="blank-add" id="blankAdd"><span>+</span><b>Add</b></div>
         </div>
         <div class="empty-copy">
-          <h1 class="empty-title">Four takes from your clips</h1>
-          <p>Add clips and Cutsona cuts different versions that play side by side (four to start, up to ten), so you can compare before you export. Add a song and every cut lands on its beat.</p>
+          <h1 class="empty-title" id="emptyTitle">Four takes from your clips</h1>
+          <p>Add clips and Cutsona cuts different versions that play side by side. Don’t like a clip? Make a new one with <a href="#" class="glow-link" id="linkAddTake">Add</a>.</p>
           <div class="empty-cta">
             <button class="primary big" id="btnFindEmpty">Find clips</button>
             <button class="ghost big" id="btnOwnEmpty">Use my own clips</button>
           </div>
-          <div class="empty-hint">You can also drop video files anywhere in this window, or paste a link.</div>
+          <div class="empty-hint">Or drop videos anywhere, or paste a link.</div>
           <div class="analyzing" id="analyzing" hidden><div class="spinner"></div><span id="analyzingText">Reading clips</span></div>
         </div>
       </div>
@@ -167,19 +189,20 @@
       <button class="play" id="btnPlay" title="Play or pause (Space)"><svg viewBox="0 0 24 24"><path id="playIcon" d="M7 5v14l12-7z"/></svg></button>
       <div class="time" id="time">0:00.0</div>
       <div class="timeline-wrap">
-        <div class="tl-lanes" aria-hidden="true"><i></i><span title="Card motion keyframes (the whole picture moves): double-click this row to add one">Card</span><span title="Camera keyframes (what the camera looks at inside a cut): double-click this row to add one">Camera</span><span title="The song: lines are beats, pink lines are drops">Song</span><span title="Your edit's cuts, numbered: click one to frame it">Cuts</span></div>
+        <div class="tl-lanes" aria-hidden="true"><i></i><span title="Card motion: click, then drag or scroll the picture to add a keyframe"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 9-9 9-9-9z"/></svg>Card</span><span title="Camera: click, then drag the picture to aim the camera (a keyframe at the playhead)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/></svg>Camera</span><span title="Effects: transitions, speed, flips and hits on drops"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>FX</span><span title="The song: lines are beats, pink lines are drops"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>Song</span><span title="Your cuts: click one to frame it, drag to move it"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 5v14M16 5v14"/></svg>Cuts</span></div>
         <canvas id="timeline"></canvas>
         <div class="tl-label" id="tlLabel"></div>
       </div>
       <div class="tl-zoom" role="group" aria-label="Timeline zoom">
         <button id="tlZoomOut" title="Zoom the timeline out (−)" aria-label="Zoom out" disabled><svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg></button>
-        <button id="tlZoomLvl" title="Fit the whole edit (click). Ctrl + scroll on the timeline zooms too">Fit</button>
+        <button id="tlZoomLvl" title="Fit the whole edit (click). Scroll on the timeline zooms in and out, Shift + scroll moves along it">Fit</button>
         <button id="tlZoomIn" title="Zoom the timeline in (+)" aria-label="Zoom in"><svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12"/></svg></button>
       </div>
       <div class="tl-add">
         <button class="small" id="btnAddCut" title="Add a new cut after the one at the playhead, from your clips">+ Add clip</button>
         <div class="add-menu" id="addMenu" hidden role="menu"></div>
       </div>
+      <button class="small ov-add" id="btnAddOverlay" aria-label="Add a photo or video on top" title="Put a photo or a video on top of every take: drag it anywhere, drag its corner to resize, × removes it from one take"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="15" height="13" rx="2"/><path d="m3 15 4-4 4 4 3-3 4 4"/><path d="M20 3v6M17 6h6"/></svg></button>
       <div class="viewbar" id="viewBar"></div>
       <button class="small toggle on" id="btnLoop" title="Loop">Loop</button>
     </div>
@@ -194,7 +217,7 @@
 <div class="settings" id="settings" hidden role="dialog" aria-modal="true" aria-label="Settings">
   <div class="set-card">
     <div class="set-h">
-      <div class="set-tabs" role="tablist"><button role="tab" data-set-tab="settings" class="on" aria-selected="true">Settings</button><button role="tab" data-set-tab="credits" aria-selected="false">Credits</button></div>
+      <div class="set-tabs" role="tablist"><button role="tab" data-set-tab="settings" class="on" aria-selected="true">Settings</button><button role="tab" data-set-tab="hotkeys" aria-selected="false">Hotkeys</button><button role="tab" data-set-tab="credits" aria-selected="false">Credits</button></div>
       <button class="small" id="btnSetClose">Done</button>
     </div>
     <div class="set-b" data-pane="settings">
@@ -205,6 +228,17 @@
           <div class="set-row"><button class="small" id="btnUseDir">Use this path</button><button class="small" id="btnOpenDir">Open folder</button><button class="small" id="btnResetDir">Back to default</button></div>
           <small class="hint-s" id="setDirNote"></small>
         </div>
+      </section>
+      <section class="set-sec" id="setKeys">
+        <h4>API keys</h4>
+        <p class="hint-s keys-intro">Some sources in Find clips need a free key of your own. Get one from the link, paste it here, and press Save. Keys stay on this computer only.</p>
+        <div class="key-list"></div>
+      </section>
+      <section class="set-sec">
+        <h4>Performance</h4>
+        <label class="field"><span>Takes when Cutsona opens</span>
+          <select id="setPerf"><option value="auto">Automatic: fewer on a low-power computer</option><option value="one">One take (smoothest)</option><option value="full">All my takes</option></select>
+          <small class="hint-s" id="perfNote"></small></label>
       </section>
       <section class="set-sec">
         <h4>Updates</h4>
@@ -238,10 +272,26 @@
           <div class="set-row"><button class="small" id="btnAccentReset">Back to yellow</button></div>
           <small class="hint-s">Used for buttons you press, the take you're on, the song window and the playhead.</small>
         </div>
+        <div class="field"><span>"On" color <em id="onName"></em></span>
+          <div class="swatches" id="setOnColor"></div>
+          <div class="set-row"><button class="small" id="btnOnReset">Back to green</button></div>
+          <small class="hint-s">The dot and fill on options that are switched on (captions On, effects picked, loop…).</small>
+        </div>
         <div class="set-sample" aria-hidden="true"><span class="primary">Export</span><span class="s-chip">Selected</span><span class="s-bar"><i></i></span></div>
       </section>
     </div>
+    <div class="set-b" data-pane="hotkeys" hidden>
+      <p class="cr-intro">Click a shortcut, then press the key you want for it. Esc cancels, Backspace leaves an action without a key. A key can only do one thing: if the key you press already does something (another shortcut, or something Cutsona or Windows needs), Cutsona says what, and you can swap the keys, use it anyway or pick another. Keys 1 to 9 always pick a take.</p>
+      <div class="hk-box" id="hkBox"></div>
+    </div>
     <div class="set-b" data-pane="credits" hidden>
+      <div class="cr-maker">
+        <small>Made by</small>
+        <b>slaxr</b>
+        <span>Creator of Cutsona, and fully debugged by
+          <a href="https://www.instagram.com/slaxr/" target="_blank" rel="noopener noreferrer">@slaxr</a> /
+          <a href="https://www.instagram.com/gitlist/" target="_blank" rel="noopener noreferrer">@gitlist</a> on Instagram</span>
+      </div>
       <p class="cr-intro">Cutsona is open source (MIT license) and built on free, open-source software. Thank you to everyone who makes and looks after these projects. <a href="https://github.com/Cutsona/Cutsona" target="_blank" rel="noopener noreferrer">Cutsona on GitHub</a></p>
       <section class="set-sec">
         <h4>Video and audio</h4>
@@ -270,6 +320,11 @@
           <li><div class="cr-top"><b>Python</b><span class="cr-lic">PSF</span></div><p>Runs faster-whisper for the word timing.</p><div class="cr-links"><a href="https://github.com/python/cpython" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://www.python.org" target="_blank" rel="noopener noreferrer">python.org</a></div></li>
           <li><div class="cr-top"><b>Archivo</b><span class="cr-lic">SIL OFL 1.1</span></div><p>The typeface of the Cutsona interface, by Omnibus-Type.</p><div class="cr-links"><a href="https://github.com/Omnibus-Type/Archivo" target="_blank" rel="noopener noreferrer">GitHub</a></div></li>
         </ul>
+      </section>
+      <section class="set-sec">
+        <h4>Quick Mode research and narration</h4>
+        <p class="cr-note">Topic to video uses the sources below and saves a credits file beside each exported video.</p>
+        <div class="cr-sites"><a href="https://en.wikipedia.org/" target="_blank" rel="noopener noreferrer">Wikipedia</a><a href="https://science.nasa.gov/" target="_blank" rel="noopener noreferrer">NASA Science</a><a href="https://images.nasa.gov/" target="_blank" rel="noopener noreferrer">NASA Image and Video Library</a><a href="https://crossref.org/" target="_blank" rel="noopener noreferrer">Crossref</a><a href="https://europepmc.org/" target="_blank" rel="noopener noreferrer">Europe PMC</a><a href="https://www.loc.gov/" target="_blank" rel="noopener noreferrer">Library of Congress</a><a href="https://github.com/rhasspy/piper" target="_blank" rel="noopener noreferrer">Piper voices</a></div>
       </section>
       <section class="set-sec">
         <h4>Where clips and music come from</h4>
@@ -314,8 +369,9 @@
 <div class="toast" id="toast"></div>
 <div class="dropveil" id="dropveil"><div>Drop clips or a song</div></div>
 <div id="pool" aria-hidden="true"></div>
-<input type="file" id="fileClips" accept="video/*,image/*,.mkv,.mov,.flv,.ts,.m4v" multiple hidden>
+<input type="file" id="fileClips" accept="video/*,image/*,.mkv,.mov,.flv,.ts,.m4v,.srt,.vtt" multiple hidden>
 <input type="file" id="fileFolder" webkitdirectory multiple hidden>
+<input type="file" id="fileOverlay" accept="image/*,video/*,.mkv,.mov" multiple hidden>
 <input type="file" id="fileMusic" accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,video/mp4" hidden>
 <script>try { for (const k of Object.keys(localStorage)) if (/^(em|slax)\./.test(k)) { const n = 'cutsona.' + k.slice(k.indexOf('.') + 1); if (localStorage.getItem(n) == null) localStorage.setItem(n, localStorage.getItem(k)); localStorage.removeItem(k); } } catch {}</script>
 <script type="module" src="js/main.js"></script>

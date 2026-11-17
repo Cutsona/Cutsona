@@ -7,10 +7,11 @@
 // clipped from) those moments come first. Then: what the channel's most-viewed clips are about (title words),
 // YouTube "Most replayed" / comment timestamps, and the stream itself (laughs, yelling, big reactions, hooks).
 import { speechPhrases, quoteScore } from './moments.js';
+import { reactionAt, reactionLabel, feeling } from './sounds.js';
 import { STYLES } from './styles.js';
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-export const STREAM_LAYOUTS = [['auto', 'Auto'], ['stack', 'Cam + screen'], ['full', 'Full frame']];
+export const STREAM_LAYOUTS = [['auto', 'Auto'], ['stack', 'Cam + screen'], ['cam', 'Webcam + screen'], ['full', 'Full frame']];
 
 // a plain look (no effects): what you'd post as a clip
 STYLES.stream = {
@@ -51,32 +52,61 @@ export function findCam(clip) {
   // big + central = the streamer IS the picture (IRL, full cam)
   box.full = box.h > 0.55 || (box.w * box.h > 0.16 && Math.abs(box.x - 0.5) < 0.2);
   // a facecam overlay sits in a corner; someone sitting still in the middle of a room camera is not one
-  box.corner = Math.abs(box.x - 0.5) > 0.2 && Math.abs(box.y - 0.5) > 0.15;
+  // (or a small one right at a side of the picture: a facecam / cut-out of the streamer at the side of the screen)
+  box.corner = Math.abs(box.x - 0.5) > 0.2 && (Math.abs(box.y - 0.5) > 0.15 || (Math.abs(box.x - 0.5) > 0.3 && box.w * box.h < 0.08));
   box.steady = box.share > 0.35 && box.corner;
+  // more than one person on cam (a duo stream, a guest): the other spots seen nearly as often, near the first one
+  const others = [...cells.values()].filter((c) => c !== best && c.n >= best.n * 0.45).map((c) => ({ x: med(c.xs), y: med(c.ys), w: med(c.ws), h: med(c.hs) }))
+    .filter((o) => Math.abs(o.x - box.x) > Math.max(box.w, o.w) * 0.6 && Math.abs(o.y - box.y) < Math.max(box.h, o.h) * 1.4 && o.h > box.h * 0.45 && o.h < box.h * 2.2);
+  if (others.length) {
+    const all = [box, ...others.slice(0, 3)];
+    const x0 = Math.min(...all.map((o) => o.x - o.w / 2)), x1 = Math.max(...all.map((o) => o.x + o.w / 2));
+    const y0 = Math.min(...all.map((o) => o.y - o.h / 2)), y1 = Math.max(...all.map((o) => o.y + o.h / 2));
+    box.group = { x: (x0 + x1) / 2, y: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0, n: all.length };
+  }
   return box;
 }
 
-// the two crops for the "cam on top" layout, in source coordinates (0..1 inside the picture area)
-// opts.game: 'fill' (biggest crop of the middle) or 'whole' (the whole stream screen, fitted to the panel)
-// opts.cam: 'face' (close on the streamer) or 'whole' (the whole webcam box)
+// the two crops for the "cam on top" layout, in source coordinates of the WHOLE frame (0..1)
+// opts.game: 'fill' (biggest crop of the middle of the picture) or 'whole' (the whole stream screen, fitted to its panel)
+// opts.cam: 'face' (close on the streamer), 'whole' (the whole webcam box) or 'multi' (everyone on cam, when there are two or more)
+// opts.area: where the picture is inside the frame [x, y, w, h] (black bars around it left out of the "fill" crop)
 export function stackRects(clip, outAspect, stackY = 0.5, cam = clip.cam, opts = {}) {
   const va = (clip.w || 16) / (clip.h || 9);
+  // every crop stays inside the picture (black bars around a movie or a letterboxed stream are left out)
+  const area = opts.area || [0, 0, 1, 1], [ax, ay, aw, ah] = area, vaA = va * aw / ah;
   const panel = (y) => outAspect / y; // width / height of a panel in output space
+  // a box of aspect `aspect` (output space) around a point given in whole-frame coordinates, kept inside the picture
   const rectAround = (cx, cy, h, aspect) => {
-    let rh = clamp(h, 0.05, 1), rw = rh * aspect / va;
-    if (rw > 1) { rw = 1; rh = rw * va / aspect; }
-    return [clamp(cx - rw / 2, 0, 1 - rw), clamp(cy - rh / 2, 0, 1 - rh), rw, rh];
+    const rx = (cx - ax) / aw, ry = (cy - ay) / ah, rhh = h / ah;
+    let rh = clamp(rhh, 0.05, 1), rw = rh * aspect / vaA;
+    if (rw > 1) { rw = 1; rh = rw * vaA / aspect; }
+    const x = clamp(rx - rw / 2, 0, 1 - rw), y = clamp(ry - rh / 2, 0, 1 - rh);
+    return [ax + x * aw, ay + y * ah, rw * aw, rh * ah];
   };
   const camA = panel(stackY), gameA = panel(1 - stackY);
-  // cam: around the face/person box, a bit of room above the head (or the whole webcam box around it)
-  const camH = opts.cam === 'whole' ? 2.9 : 1.7;
-  const camRect = cam ? rectAround(cam.x, cam.y - cam.h * 0.05, cam.h * camH, camA) : rectAround(0.5, 0.5, 1, camA);
-  // gameplay: the middle of the frame (the biggest crop that fits the panel)
-  const gameFill = rectAround(0.5, 0.5, 1, gameA);
+  let camRect;
+  if (cam && opts.cam === 'multi' && cam.group) {
+    // everyone on cam: tall enough for the tallest face, wide enough for all of them, a bit of room around
+    const g = cam.group, needH = Math.max(g.h * 1.6, (g.w * 1.25) * va / camA);
+    camRect = rectAround(g.x, g.y - g.h * 0.04, needH, camA);
+  } else {
+    // cam: around the face box, a bit of room above the head (or the whole webcam box around it)
+    // ('tall': the cam-only layout, a tall crop that stays inside the webcam box around the face)
+    const camH = opts.cam === 'whole' ? 2.9 : opts.cam === 'tall' ? 2.2 : 1.7;
+    if (cam && opts.cam !== 'whole' && cam.h > 0.3) {
+      // a whole person was found (not just a face): the part of them inside the picture is the webcam, fill with that
+      const top = Math.max(ay, cam.y - cam.h / 2), bot = Math.min(ay + ah, cam.y + cam.h / 2);
+      camRect = rectAround(cam.x, (top + bot) / 2, (bot - top) * 1.08, camA);
+    } else camRect = cam ? rectAround(cam.x, cam.y - cam.h * 0.05, cam.h * camH, camA) : rectAround(ax + aw / 2, ay + ah / 2, ah, camA);
+  }
+  // gameplay: the middle of the picture (the biggest crop that fits the panel)
+  const gameFill = rectAround(ax + aw / 2, ay + ah / 2, ah, gameA);
   let gameRect = gameFill;
   if (opts.game === 'whole') {
-    // the whole picture, as wide as the panel (or as tall, for a tall video); the rest is filled behind it
-    gameRect = va >= gameA ? [0, 0.5 - va / gameA / 2, 1, va / gameA] : [0.5 - gameA / va / 2, 0, gameA / va, 1];
+    // the whole picture, as wide as the panel (or as tall, for a tall video); the rest is black bars or a blurred copy
+    const r = vaA >= gameA ? [0, 0.5 - vaA / gameA / 2, 1, vaA / gameA] : [0.5 - gameA / vaA / 2, 0, gameA / vaA, 1];
+    gameRect = [ax + r[0] * aw, ay + r[1] * ah, r[2] * aw, r[3] * ah];
   }
   return { camRect, gameRect, gameFill };
 }
@@ -124,6 +154,12 @@ export function excitement(clip) {
     const k = kw.get(t.toLowerCase().replace(/[^a-z0-9']/g, ''));
     if (k) bump(w.start, 0.3 * k, 2, 4);
   }
+  // what the sound says (YAMNet): laughter, cheering, screaming, gasps, big hits; the reaction carries on a moment
+  if (clip.sounds) for (let i = 0; i < n; i++) { let r = 0; for (let j = Math.max(0, i - 10); j <= i; j++) r = Math.max(r, reactionAt(clip.sounds, j / 10) * (1 - (i - j) / 14)); c[i] += 0.55 * r; }
+  // silent reactions (Face Landmarker): mouth open, big smile, eyebrows up, wide eyes
+  if (clip.faceReact) { const f = clip.faceReact; for (let i = 0; i < n; i++) c[i] += 0.4 * (f.v[Math.floor(i / 10 / f.step)] || 0); }
+  // strong words (VADER): "insane", "no way", "I hate this"
+  for (const w of clip.words || []) { const f = feeling(w.text); if (f > 0.25) bump(w.start, 0.18 * f, 0.5, 2); }
   for (const m of provenIn(clip)) {
     const v = 0.9 + 0.25 * Math.log10((m.views || 0) + 10);
     for (let i = Math.max(0, Math.floor(m.t0 * 10)); i < Math.min(n, Math.ceil(m.t1 * 10)); i++) c[i] += v;
@@ -163,11 +199,17 @@ export function removeDeadAir(clip, a, b, gap = 0.7) {
   const med = sorted[Math.floor(sorted.length * 0.5)] || 0;
   // a quiet gap is dead air; keep it only if something loud happens in it (a scream, an explosion)
   const eventful = (g0, g1) => { const l = loud(g0, g1); return l > p75 && l > med * 1.25 + 0.02; };
+  // where the voice really starts and stops (Silero VAD): cuts land right at its edges instead of a guess around
+  // the words, and a sound in the gap that isn't a word (a laugh, a gasp) keeps the gap
+  const runs = clip.speechRuns || [];
+  const voiced = (g0, g1) => runs.some(([x, y]) => Math.min(y, g1 - 0.1) - Math.max(x, g0 + 0.1) > 0.25);
+  const endOf = (t) => { const r = runs.find(([x, y]) => t >= x - 0.05 && t <= y + 0.3); return r ? Math.max(t, Math.min(r[1], t + 0.35)) + 0.06 : t + 0.12; };
+  const startOf = (t) => { const r = runs.find(([x, y]) => t >= x - 0.3 && t <= y + 0.05); return r ? Math.min(t, Math.max(r[0], t - 0.35)) - 0.06 : t - 0.12; };
   const pieces = [];
   let s = a;
   for (let i = 1; i < ws.length; i++) {
     const g0 = ws[i - 1].end, g1 = ws[i].start;
-    if (g1 - g0 > gap && !eventful(g0, g1)) { pieces.push([s, g0 + 0.12]); s = g1 - 0.12; }
+    if (g1 - g0 > gap && !eventful(g0, g1) && !voiced(g0, g1)) { pieces.push([s, endOf(g0)]); s = startOf(g1); }
   }
   pieces.push([s, b]);
   return pieces.filter(([x, y]) => y - x > 0.15);
@@ -217,8 +259,9 @@ export function findHighlights(clips, { count = 4, maxLen = 30, minLen = 8 } = {
       const hook = first && (/[!?]/.test(first.text) || REACT.test(first.text.split(' ')[0] || '')) ? 0.15 : 0;
       const spoken = wordsIn(clip, a, b).length / Math.max(1, b - a);
       const score = (mean + 0.5 * pk + hook + (pm ? 0.6 + 0.25 * Math.log10((pm.views || 0) + 10) : 0) + Math.min(0.2, spoken * 0.05)) * (spare.has(p) ? 0.8 : 1) + selfBonus;
+      const heard = reactionLabel(clip.sounds, a, b);
       const why = pm ? `Viewers clipped this, ${fmtViews(pm.views)} views` : laughAt(clip, a, b) >= 2 ? 'Big laugh'
-        : clip.replay && mean > 0.8 ? 'Most replayed' : brain?.self?.views ? `From a viewer clip, ${fmtViews(brain.self.views)} views` : 'Big reaction';
+        : clip.replay && mean > 0.8 ? 'Most replayed' : brain?.self?.views ? `From a viewer clip, ${fmtViews(brain.self.views)} views` : heard ? `You can hear ${heard}` : 'Big reaction';
       cands.push({ ci, a, b, score, why, proven: pm });
     }
   });
@@ -356,7 +399,8 @@ export function planHighlight(h, clips, { layout = 'auto', outAspect = 9 / 16, c
   const toOut = (src) => { for (const g of segments) if (src >= g.srcStart && src <= g.srcStart + g.srcDur) return g.start + (src - g.srcStart); return -1; };
   const punches = (h.punches || []).map((p) => ({ t: toOut(p.t), k: p.k })).filter((p) => p.t >= 0);
   const cam = clip.cam || findCam(clip);
-  const use = layout === 'auto' ? (cam && cam.steady && !cam.full ? 'stack' : 'full') : layout;
+  // 'cam' (the streamer's camera filling the whole picture) needs a facecam; without one it's the full frame following them
+  const use = layout === 'auto' ? (cam && cam.steady && !cam.full ? (cam.box ? 'cam' : 'stack') : 'full') : layout === 'cam' && !(cam && !cam.full) ? 'full' : layout;
   return { styleId: 'stream', style: STYLES.stream, seed: 0, mode: 'stream', off: [], order: 'story', intro: 0, voice: false,
     duration: t, segments, beats: [], musicStart: 0, period: 1, noMusic: true,
     highlight: { ...h, title: h.title, layout: use, cam, punches, channel, platform } };
@@ -394,7 +438,7 @@ export const BANNER_THEMES = [
 ];
 // layout 'stack': the banner sits on the line between the two halves (divider = where that line is, 0..1 from
 // the top) and the title box just under it. 'full': title box near the top, banner near the bottom.
-export function drawStreamOverlay(aspect, { layout = 'stack', platform = '', channel = '', title = '', banner = 'on', theme = 'classic', divider = 0.5, pos = null } = {}) {
+export function drawStreamOverlay(aspect, { layout = 'stack', platform = '', channel = '', title = '', banner = 'on', theme = 'classic', divider = 0.5, pos = null, titlePos = null, logo = null } = {}) {
   const H = 1280, W = Math.round(H * aspect);
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
@@ -414,7 +458,13 @@ export function drawStreamOverlay(aspect, { layout = 'stack', platform = '', cha
   if (banner !== 'off' && P && channel) {
     g.textBaseline = 'middle';
     const name = channel, link = (P.site + channel).toUpperCase();
-    const fLogo = (k) => { g.font = logoFont(Math.round(barH * k)); return g.measureText(P.logo).width; };
+    // the platform's name in its colors, or your own logo picture (Settings: Banner → Logo)
+    const logoOk = logo && logo.naturalWidth > 0, logoAr = logoOk ? logo.naturalWidth / logo.naturalHeight : 1;
+    const fLogo = (k) => { if (logoOk) return barH * k * 0.92 * logoAr; g.font = logoFont(Math.round(barH * k)); return g.measureText(P.logo).width; };
+    const paintLogo = (k, color, align, x) => {
+      if (logoOk) { const h = barH * k * 0.92, w = h * logoAr, al = align || g.textAlign; g.drawImage(logo, al === 'right' ? x - w : al === 'center' ? x - w / 2 : x, mid - h / 2, w, h); return; }
+      g.font = logoFont(Math.round(barH * k)); g.fillStyle = color; if (align) g.textAlign = align; g.fillText(P.logo, x, mid);
+    };
     const fText = (t, k, wt = 800) => { g.font = sans(Math.round(barH * k), wt); return g.measureText(t).width; };
     // how wide the banner's contents are (for a moved, compact banner)
     const tagW = fText('LIVE', 0.46, 900) + barH * 0.5;
@@ -441,26 +491,26 @@ export function drawStreamOverlay(aspect, { layout = 'stack', platform = '', cha
     let box = [bx0, barY, bx0 + bw, barY + barH];
     if (theme === 'classic') {
       bar(stack && !floating ? '#000' : 'rgba(0,0,0,0.6)');
-      g.font = logoFont(Math.round(barH * 0.82)); g.fillStyle = P.color; g.textAlign = 'left'; g.fillText(P.logo, L, mid);
+      paintLogo(0.82, P.color, 'left', L);
       g.font = sans(Math.round(barH * 0.42)); g.fillStyle = '#fff'; g.textAlign = 'right'; g.fillText(link, R, mid);
     } else if (theme === 'center' || theme === 'brand') {
       const brand = theme === 'brand', ink = brand && platform === 'kick' ? '#000' : '#fff';
       bar(brand ? P.color : stack && !floating ? '#000' : 'rgba(0,0,0,0.65)');
-      g.font = logoFont(Math.round(barH * 0.72)); const lw = g.measureText(P.logo).width;
+      const lw = fLogo(0.72);
       g.font = sans(Math.round(barH * 0.5), 800); const nw = g.measureText(name.toUpperCase()).width;
       const gap = barH * 0.35, x0 = CX - (lw + gap + nw) / 2;
       g.textAlign = 'left';
-      g.font = logoFont(Math.round(barH * 0.72)); g.fillStyle = brand ? ink : P.color; g.fillText(P.logo, x0, mid);
+      paintLogo(0.72, brand ? ink : P.color, null, x0);
       g.font = sans(Math.round(barH * 0.5), 800); g.fillStyle = ink; g.fillText(name.toUpperCase(), x0 + lw + gap, mid);
     } else if (theme === 'nametag') {
       if (stack && !floating) { g.fillStyle = '#000'; g.fillRect(0, Math.round(H * divider) - 3, W, 6); }
-      g.font = logoFont(Math.round(barH * 0.66)); const lw = g.measureText(P.logo).width;
+      const lw = fLogo(0.66);
       g.font = sans(Math.round(barH * 0.5), 800); const nw = g.measureText('@' + name).width;
       const padX = barH * 0.45, gap = barH * 0.3, tw = lw + gap + nw + padX * 2, th = barH * 1.05;
       const tx = floating ? Math.min(W - tw - 2, Math.max(2, pos.x * W - tw / 2)) : (W - tw) / 2, ty = mid - th / 2;
       g.fillStyle = '#fff'; roundRect(g, tx, ty, tw, th, th / 2); g.fill();
       g.textAlign = 'left';
-      g.font = logoFont(Math.round(barH * 0.66)); g.fillStyle = platform === 'kick' ? '#1a9e00' : P.color; g.fillText(P.logo, tx + padX, mid);
+      paintLogo(0.66, platform === 'kick' ? '#1a9e00' : P.color, null, tx + padX);
       g.font = sans(Math.round(barH * 0.5), 800); g.fillStyle = '#111'; g.fillText('@' + name, tx + padX + lw + gap, mid);
       box = [tx, ty, tx + tw, ty + th];
       if (!floating) below = ty + th;
@@ -471,7 +521,7 @@ export function drawStreamOverlay(aspect, { layout = 'stack', platform = '', cha
       g.fillStyle = '#fff'; g.textAlign = 'left'; g.fillText('LIVE', L + barH * 0.2, mid);
       g.font = sans(Math.round(barH * 0.5), 800); g.textAlign = 'center';
       g.fillText(name.toUpperCase(), floating ? (L + tagW + R - fLogo(0.62)) / 2 : W / 2, mid);
-      g.font = logoFont(Math.round(barH * 0.62)); g.fillStyle = P.color; g.textAlign = 'right'; g.fillText(P.logo, R, mid);
+      paintLogo(0.62, P.color, 'right', R);
     } else { // minimal
       if (stack && !floating) { g.fillStyle = 'rgba(255,255,255,0.9)'; g.fillRect(0, Math.round(H * divider) - 1, W, 2); }
       g.font = sans(Math.round(barH * 0.55), 800); g.textAlign = 'center';
@@ -496,10 +546,16 @@ export function drawStreamOverlay(aspect, { layout = 'stack', platform = '', cha
     g.font = sans(size, 800);
     const lw = Math.max(...lines.map((l) => g.measureText(l).width)), padX = size * 0.6, padY = size * 0.32, lh = size * 1.18;
     const bw = lw + padX * 2, bh = lines.length * lh + padY * 2;
-    const by = stack ? below + H * 0.018 : H * 0.12;
-    g.fillStyle = '#ffffff'; roundRect(g, (W - bw) / 2, by, bw, bh, size * 0.35); g.fill();
+    // moved by hand (titlePos = its center, 0..1), else under the banner
+    const moved = !!(titlePos && Number.isFinite(titlePos.x) && Number.isFinite(titlePos.y));
+    const by = moved ? Math.min(H - bh - 2, Math.max(2, titlePos.y * H - bh / 2)) : stack ? below + H * 0.018 : H * 0.12;
+    const bx = moved ? Math.min(W - bw - 2, Math.max(2, titlePos.x * W - bw / 2)) : (W - bw) / 2;
+    g.fillStyle = '#ffffff'; roundRect(g, bx, by, bw, bh, size * 0.35); g.fill();
     g.fillStyle = '#000'; g.textAlign = 'center'; g.textBaseline = 'middle';
-    lines.forEach((l, i) => g.fillText(l, W / 2, by + padY + lh * (i + 0.5)));
+    lines.forEach((l, i) => g.fillText(l, bx + bw / 2, by + padY + lh * (i + 0.5)));
+    // where the title box is, so it can be dragged on the preview
+    c.titleBox = [bx / W, by / H, (bx + bw) / W, (by + bh) / H];
+    c.titleCenter = [(bx + bw / 2) / W, (by + bh / 2) / H];
   }
   return c;
 }

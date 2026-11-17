@@ -7,8 +7,14 @@ export const ACCENTS = [
   ['#4d9fff', 'Blue'], ['#2fd6e0', 'Cyan'], ['#5ee08a', 'Green'], ['#c6f04a', 'Lime'], ['#f2f0ea', 'White'],
 ];
 const DEFAULT_ACCENT = '#ffc933';
+// the color of options that are switched ON (the green dot / filled On buttons)
+export const ON_COLORS = [
+  ['#34d17a', 'Green'], ['#5ee0c8', 'Mint'], ['#2fd6e0', 'Cyan'], ['#4d9fff', 'Blue'], ['#a78bff', 'Violet'],
+  ['#ff6fb5', 'Pink'], ['#ff5a5f', 'Red'], ['#ff8a3d', 'Orange'], ['#ffc933', 'Yellow'], ['#f2f0ea', 'White'],
+];
+const DEFAULT_ON = '#34d17a';
 
-let look = { theme: 'dark', accent: DEFAULT_ACCENT };
+let look = { theme: 'dark', accent: DEFAULT_ACCENT, on: DEFAULT_ON };
 try { look = { ...look, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch {}
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(look)); } catch {} };
 
@@ -39,8 +45,19 @@ export function applyLook() {
   root.style.setProperty('--tape-ink', L > 0.36 ? '#161400' : '#ffffff');
   // in light mode a very light accent (white, lime) would vanish as an outline: use the text color for focus rings
   root.style.setProperty('--ring', theme === 'light' && L > 0.6 ? 'var(--paper)' : 'var(--tape)');
+  // the ON color, and black or white text on it
+  const on = hexRgb(look.on || DEFAULT_ON);
+  root.style.setProperty('--on', toHex(...on));
+  root.style.setProperty('--on-ink', lum(on) > 0.3 ? '#04140a' : '#ffffff');
   document.dispatchEvent(new CustomEvent('cutsona:look'));
+  // the desktop window's own buttons (minimize / maximize / close) take the header's colors
+  const dk = window.cutsonaDesktop;
+  if (dk?.frameless) {
+    root.classList.add('frameless');
+    requestAnimationFrame(() => { const cs = getComputedStyle(document.querySelector('header.top') || root); dk.setTitleBar?.(cs.backgroundColor && !/rgba\(0, 0, 0, 0\)/.test(cs.backgroundColor) ? cssHex(cs.backgroundColor) : (theme === 'light' ? '#f4f2ec' : '#1f1f22'), theme === 'light' ? '#1d1d1f' : '#f2f0ea'); });
+  }
 }
+function cssHex(c) { const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(c); return m ? '#' + [m[1], m[2], m[3]].map((v) => Number(v).toString(16).padStart(2, '0')).join('') : '#1f1f22'; }
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (look.theme === 'system') applyLook(); });
 applyLook();
 
@@ -57,6 +74,11 @@ export function initSettings({ toast, esc }) {
     const preset = ACCENTS.find(([h]) => h === cur);
     $('#accentName').textContent = preset ? preset[1] : `Custom ${cur}`;
     $('.sw-custom').classList.toggle('on', !preset);
+    const oc = (look.on || DEFAULT_ON).toLowerCase(), op = ON_COLORS.find(([h]) => h === oc);
+    box.querySelectorAll('#setOnColor [data-oncolor]').forEach((b) => b.classList.toggle('on', b.dataset.oncolor === oc));
+    $('#onPick').value = toHex(...hexRgb(oc));
+    $('#onName').textContent = op ? op[1] : `Custom ${oc}`;
+    $('#setOnColor .sw-custom').classList.toggle('on', !op);
   }
   function renderDir(note = '') {
     $('#setDir').value = server.exportDir || '';
@@ -89,12 +111,16 @@ export function initSettings({ toast, esc }) {
 
   box.querySelector('#setAccent').innerHTML = ACCENTS.map(([h, n]) => `<button data-accent="${h}" title="${esc(n)}" aria-label="${esc(n)}" style="--sw:${h}"></button>`).join('')
     + '<label class="sw-custom" title="Any color"><input type="color" id="accentPick" aria-label="Pick any accent color"><span>Custom</span></label>';
+  box.querySelector('#setOnColor').innerHTML = ON_COLORS.map(([h, n]) => `<button data-oncolor="${h}" title="${esc(n)}" aria-label="${esc(n)}" style="--sw:${h}"></button>`).join('')
+    + '<label class="sw-custom" title="Any color"><input type="color" id="onPick" aria-label="Pick any color for options that are on"><span>Custom</span></label>';
 
   box.addEventListener('click', (e) => {
     const b = e.target.closest('button'); if (!b) return;
     if (b.dataset.theme) { look.theme = b.dataset.theme; save(); applyLook(); renderLook(); }
     else if (b.dataset.accent) { look.accent = b.dataset.accent; save(); applyLook(); renderLook(); }
     else if (b.id === 'btnAccentReset') { look.accent = DEFAULT_ACCENT; save(); applyLook(); renderLook(); }
+    else if (b.dataset.oncolor) { look.on = b.dataset.oncolor; save(); applyLook(); renderLook(); }
+    else if (b.id === 'btnOnReset') { look.on = DEFAULT_ON; save(); applyLook(); renderLook(); }
     else if (b.id === 'btnPickDir') {
       // the desktop app has the system's own folder picker
       if (window.cutsonaDesktop?.pickFolder) window.cutsonaDesktop.pickFolder(server.exportDir).then((d) => { if (d) setDir('dir=' + encodeURIComponent(d), (x) => `Exports now save to ${x}`); });
@@ -159,6 +185,7 @@ export function initSettings({ toast, esc }) {
     else note.textContent = bad.length ? `${good.length} of ${tried.length} sites are working. ${bad.map((r) => r.name).join(', ')} ${bad.length === 1 ? 'is' : 'are'} having problems on their side, not yours.` : `All ${tried.length} sites are working.`;
   }
   $('#accentPick').addEventListener('input', (e) => { look.accent = e.target.value.toLowerCase(); save(); applyLook(); renderLook(); });
+  $('#onPick').addEventListener('input', (e) => { look.on = e.target.value.toLowerCase(); save(); applyLook(); renderLook(); });
   $('#setDir').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#btnUseDir').click(); });
   box.addEventListener('pointerdown', (e) => { if (e.target === box) close(); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !box.hidden) { e.stopPropagation(); close(); } }, true);

@@ -1,4 +1,5 @@
 // Score complete source windows, keeping setup, action and reaction together.
+import { feeling } from './sounds.js';
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 
 export function speechPhrases(words = [], duration = Infinity) {
@@ -120,6 +121,14 @@ export function editorSense(clip, ci, start, end, moment, meanInterest, importan
 }
 // avoid: per clip, the source windows the OTHER edits already use (so the 4 edits show different footage)
 // reuse: false = only footage this edit hasn't shown yet; true = footage is running out, least-shown first
+// Scattered edits: the farther a part is from everything already used of this clip (and the less it repeats a
+// scene), the better, so the edit reaches across the whole clip instead of circling its loudest moments
+function spreadBonus(usedHere, start, end, L, sameScene) {
+  if (!usedHere.length) return 0.08;
+  let near = Infinity;
+  for (const u of usedHere) near = Math.min(near, start >= u[1] ? start - u[1] : u[0] >= end ? u[0] - end : 0);
+  return Math.min(1, near / (L * 0.12)) * 0.45 - (sameScene ? 0.3 : 0);
+}
 export function chooseWindow(clips, need, used, previous, importance = 0.5, variation = 0, avoid = null, reuse = false, ctx = null) {
   let best = null;
   clips.forEach((clip, ci) => {
@@ -128,7 +137,7 @@ export function chooseWindow(clips, need, used, previous, importance = 0.5, vari
     // footage without speech: also consider every part of the clip (not only its peaks), so the 4 edits
     // and re-rolls always have somewhere different to go
     const extra = [];
-    if (!clip.words?.length && (variation || avoid)) {
+    if (!clip.words?.length && (variation || avoid || ctx?.spread)) {
       const scenes = clip.scenes || [];
       for (let s = from; s + need <= limit; s += Math.max(0.75, need * 0.6)) {
         if (scenes.some((b) => b > s + 0.2 && b < s + need - 0.2)) continue;
@@ -137,6 +146,10 @@ export function chooseWindow(clips, need, used, previous, importance = 0.5, vari
         extra.push({ t: s + need * 0.4, start: s, end: s + need, sceneStart: s, sceneEnd: s + need, score: (m / Math.max(1, k)) * 0.75, speech: false, reason: 'Action with setup and reaction' });
       }
     }
+    // Scattered: spread the picks over the whole clip, a different scene each time
+    const L = Math.max(0.5, limit - from), scenesOf = clip.scenes || [];
+    const sceneAt = (t) => { let k = 0; for (const x of scenesOf) { if (x <= t) k++; else break; } return k; };
+    const usedScenes = ctx?.spread && !ctx.first && !ctx.intro ? new Set(used[ci].map((u) => sceneAt((u[0] + u[1]) / 2))) : null;
     for (const moment of [...(clip.moments || []), ...extra]) {
       const sceneStart = Math.max(from, moment.sceneStart ?? 0), sceneEnd = Math.min(limit, moment.sceneEnd ?? limit);
       const starts = moment.speech ? [moment.start] : [clamp(moment.t - need * 0.4, sceneStart, Math.max(sceneStart, sceneEnd - need))];
@@ -163,8 +176,9 @@ export function chooseWindow(clips, need, used, previous, importance = 0.5, vari
           // footage the other edits use (counted once per edit) is avoided, the more edits the stronger
           - Math.min(3, taken / need) * 2.5
           // each take/seed prefers different moments, so re-rolls and the 4 edits don't repeat each other
-          + (variation ? (hash01((ci + 1) * 13.37 + start * 3.1 + (variation % 100000) * 0.017) - 0.5) * 0.35 : 0);
-        if (!best || score > best.score) best = { ci, start, end, score, reason: moment.reason, speech: moment.speech, mEnd: moment.end };
+          + (variation ? (hash01((ci + 1) * 13.37 + start * 3.1 + (variation % 100000) * 0.017) - 0.5) * 0.35 : 0)
+          + (usedScenes ? spreadBonus(used[ci], start, end, L, usedScenes.has(sceneAt((start + end) / 2)) && scenesOf.length > 1) : 0);
+        if (!best || score > best.score) best = { ci, start, end, score, reason: usedScenes && !used[ci].length ? 'A new part of the clip' : moment.reason, speech: moment.speech, mEnd: moment.end };
       }
     }
   });
@@ -195,8 +209,17 @@ export function chooseInOrder(clips, need, used, from, target, tl, variation = 0
       if (m.speech) starts.push({ s: m.start, m });
       else starts.push({ s: clamp(m.t - need * 0.4, m.sceneStart ?? 0, Math.max(m.sceneStart ?? 0, Math.min(limit, m.sceneEnd ?? limit) - need)), m });
     }
-    // footage without speech: every part of the clip is a candidate, so the edit can follow the video closely
-    if (!clip.words?.length) for (let s = from0; s + need <= limit; s += Math.max(0.5, need * 0.5)) starts.push({ s, m: null });
+    // every part of the clip is a candidate too (not just its best moments), so an in-order edit can follow the
+    // whole video closely; with dialogue, only spots that don't cut a word in half
+    const W = clip.words || [];
+    const midWord = (t) => { // (words are in time order: find the last one starting before t)
+      let lo = 0, hi = W.length - 1, k = -1;
+      while (lo <= hi) { const md = (lo + hi) >> 1; if (W[md].start < t - 0.06) { k = md; lo = md + 1; } else hi = md - 1; }
+      return k >= 0 && W[k].end > t + 0.06;
+    };
+    // (a long video: a coarser grid, near where the edit is now)
+    const step = Math.max(0.4, need * 0.5, (limit - from0) / 400);
+    for (let s = from0; s + need <= limit; s += step) if (!midWord(s) && !midWord(s + need)) starts.push({ s, m: null });
     for (const { s: raw, m } of starts) {
       const start = Math.max(from0, raw), end = start + need, g = off + start;
       if (end > limit + 0.001 || g < from - 0.04) continue;
@@ -215,7 +238,8 @@ export function chooseInOrder(clips, need, used, from, target, tl, variation = 0
         - (tl.left > need && tl.total - (g + need) < (tl.left - need) * 0.9 && tl.total >= tl.left ? 1.5 : 0)
         - (overlap / need) * 2 - Math.min(3, taken / need) * 1.2
         + (tl.intro && m?.speech ? 0.6 : 0)                // opening hold: prefer a line of dialogue
-        + (variation ? (hash01((ci + 1) * 7.77 + start * 2.3 + (variation % 100000) * 0.013) - 0.5) * 0.25 : 0);
+        // each take its own path through the video (a different seed picks different moments along the way)
+        + (variation ? (hash01((ci + 1) * 7.77 + Math.round(start * 2) * 1.15 + (variation % 100000) * 0.013) - 0.5) * 0.7 : 0);
       if (!best || score > best.score) best = { ci, start, end, score, speech: !!m?.speech, mEnd: m?.end, reason: m?.reason ? `In order, ${m.reason}` : 'In order' };
     }
   });
@@ -247,8 +271,9 @@ export function quoteScore(text, { gapBefore = 1, gapAfter = 1, loud = 0.4 } = {
   const filler = (text.match(FILLER) || []).length;
   const isolated = Math.min(1, (gapBefore + gapAfter) / 1.2);
   if (PROMO.test(text)) return 0;
+  // (+ how strongly the line feels, from VADER's word scores, once its word list is loaded)
   return Math.max(0, 0.22 * lenScore + 0.3 * Math.min(1, hits / 3) + 0.18 * Math.min(1, pattern / 2) + 0.08 * personal
-    + 0.06 * strongEnd + 0.08 * isolated + 0.08 * Math.min(1, loud * 1.6) - 0.08 * filler);
+    + 0.06 * strongEnd + 0.08 * isolated + 0.08 * Math.min(1, loud * 1.6) - 0.08 * filler + 0.22 * feeling(text));
 }
 
 // ---------------- crowd ratings (what people actually rewatch and quote) ----------------

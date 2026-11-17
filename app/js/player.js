@@ -2,14 +2,18 @@
 import { Renderer } from './renderer.js';
 import { frameAt, srcRate, fadeGain } from './edit.js';
 import { audioCtx } from './audio.js';
+import { clipGainAt, hasAudioFx, audioOf, previewChain, clipSpan } from './clipaudio.js';
+import { fadeAt } from './fadewave.js';
+import { songChain } from './songedit.js';
 
 const MAX_PER_VIEW = 4; // video decoders per edit (current shot, next shot + spares)
 const FRAME_INTERVAL = 1000 / 30;
 
 export class Player {
-  constructor({ getState, getCtx, getEff, getText, getHook, poolEl, onTick }) {
+  constructor({ getState, getCtx, getEff, getText, getHook, getQuickAudio = () => null, poolEl, onTick }) {
     this.getState = getState; this.getCtx = getCtx; this.getEff = getEff; this.getText = getText; this.getHook = getHook;
     this.poolEl = poolEl;
+    this.getQuickAudio = getQuickAudio;
     this.onTick = onTick;
     this.views = [];
     this.playing = false;
@@ -64,6 +68,14 @@ export class Player {
     if (el && (el._src !== url || el._dead)) { this._kill(view, key, el); el = null; }
     if (!el) {
       while (view.pool.size >= MAX_PER_VIEW && this._evict(view, keep));
+      if (clip.still) {
+        el = new Image();
+        el.src = url; el._src = url;
+        el.addEventListener('error', () => { el._dead = true; });
+        view.pool.set(key, el);
+        el._used = performance.now();
+        return el;
+      }
       el = document.createElement('video');
       el.muted = true; el.playsInline = true; el.preload = 'auto'; el.crossOrigin = 'anonymous';
       el.preservesPitch = true; // speed ramps keep the voice at its normal pitch
@@ -113,28 +125,46 @@ export class Player {
     if (ctx.state === 'suspended') ctx.resume();
     this.t0 = ctx.currentTime;
     this.tStart = this.t;
-    if (s.music && s.music.buffer) {
+    const take = s.variants[s.focused], quick = take?.plan?.quick, audio = quick && this.getQuickAudio(take);
+    const music = quick ? audio?.song : s.music?.buffer;
+    const at = ctx.currentTime + 0.03;
+    if (audio?.voice && this.t < audio.voice.duration) {
+      const voice = ctx.createBufferSource();
+      const gain = ctx.createGain(); gain.gain.value = audio.voiceGain ?? 1;
+      voice.buffer = audio.voice; voice.connect(gain).connect(ctx.destination); voice.start(at, this.t);
+      this.voiceNode = voice;
+    }
+    if (music) {
       const src = ctx.createBufferSource();
-      src.buffer = s.music.buffer;
+      src.buffer = music; src.loop = !!quick;
       const g = ctx.createGain();
       g.gain.value = this._musicTarget(this.t, s);
       this._gTarget = g.gain.value;
-      src.connect(g).connect(ctx.destination);
-      src.start(ctx.currentTime + 0.03, Math.max(0, s.musicStart + this.t));
-      this.t0 += 0.03;
+      src.connect(g).connect(songChain(ctx, s.settings, ctx.destination)); // the song's bass / treble (Music → Edit)
+      src.start(at, quick ? this.t % music.duration : Math.max(0, s.musicStart + this.t));
       this.musicNode = src; this.gain = g;
     }
+    if (this.voiceNode || this.musicNode) this.t0 = at;
   }
   _stopMusic() {
     if (this.musicNode) { try { this.musicNode.stop(); } catch {} this.musicNode.disconnect(); this.musicNode = null; this.gain = null; }
+    if (this.voiceNode) { try { this.voiceNode.stop(); } catch {} this.voiceNode.disconnect(); this.voiceNode = null; }
   }
   // music volume incl. the song fade in / out of the edit you're listening to
   _musicTarget(t, s) {
     const plan = s.variants[s.focused] && s.variants[s.focused].plan;
     const e = this.getEff(s.focused);
     const D = plan ? plan.duration : this.duration();
+    if (plan?.quick) {
+      const speaking = plan.quick.captions.some((x) => t >= x.start && t < x.end);
+      const vol = this.getQuickAudio(s.variants[s.focused])?.songGain ?? plan.quick.gain;
+      return t < D ? vol * (speaking ? 0.45 : 1) * fadeGain(t, D, 1.5, 3) : 0;
+    }
     if (plan?.noMusic) return 0; // stream clips: the stream's own sound only
-    return s.settings.musicVol * fadeGain(t, D, Number(e.musicFadeIn) || 0, Number(e.musicFadeOut) || 0) * duckAt(plan, t);
+    if (s.settings.musicMute === 'on') return 0;
+    // the song's fades: where they start and end and their shape (set on the wave in Music → Edit)
+    const f = { fadeIn: Number(e.musicFadeIn) || 0, fadeOut: Number(e.musicFadeOut) || 0, inAt: Number(e.musicFadeInAt) || 0, outAt: Number(e.musicFadeOutAt) || 0, curve: e.musicFadeCurve || 'linear' };
+    return s.settings.musicVol * fadeAt(t, D, f) * duckAt(plan, t);
   }
   setMusicVolume() { this._gTarget = -1; }
 
@@ -144,7 +174,7 @@ export class Player {
     this.t = this.now();
     this.playing = false;
     this._stopMusic();
-    for (const v of this.views) if (v) for (const el of v.pool.values()) el.pause();
+    for (const v of this.views) if (v) for (const el of v.pool.values()) el.pause?.();
   }
   toggle() { this.playing ? this.pause() : this.play(); }
   // nothing left to play (all clips removed): silence everything and rewind
@@ -191,7 +221,7 @@ export class Player {
     for (let i = 0; i < this.views.length; i++) {
       const view = this.views[i];
       if (!view) continue;
-      if (s.solo && i !== s.focused) { for (const el of view.pool.values()) if (!el.paused) el.pause(); continue; }
+      if (s.solo && i !== s.focused) { for (const el of view.pool.values()) if (el.paused === false) el.pause(); continue; }
       this._renderView(i, t, s, D);
     }
     const activePlan = s.variants[s.focused]?.plan;
@@ -221,20 +251,39 @@ export class Player {
     const fr = frameAt(plan, tt, ctx);
     const clip = s.clips[fr.seg.clip];
     if (!clip || !clip.url) return;
-    view.renderer.setCaption(clip, fr.src, this.getEff(i), !plan.style.voiceCaptions || !!fr.seg.voice || plan.mode === 'quotes');
+    if (plan.quick) view.renderer.setTimelineCaption(plan.quick, tt, this.getEff(i));
+    else view.renderer.setCaption(clip, fr.src, this.getEff(i), !plan.style.voiceCaptions || !!fr.seg.voice || plan.mode === 'quotes');
     const keep = [];
     const el = this._el(view, clip, fr.seg.deck, keep);
     keep.push(el);
     const now = performance.now();
+    if (clip.still) {
+      for (const other of view.pool.values()) if (other.paused === false) other.pause();
+      const fresh = !view.renderer.texCache.has(el);
+      if (view.dirty || fresh || view.lastTime !== tt || view.lastEl !== el || view.lastCtx !== ctx || view.lastText !== tx?.key) {
+        view.renderer.render(el, fr.U, fresh);
+        view.dirty = false;
+      }
+      view.lastEl = el; view.lastTime = tt; view.lastCtx = ctx; view.lastText = tx?.key;
+      return;
+    }
+    el.loop = !!fr.seg.loop;
 
     // only the selected edit plays its clip sound (so you don't hear 4 at once)
     // "Best quote" edits always let you hear the line
-    const clipVol = plan.mode === 'quotes' || plan.mode === 'stream' || fr.seg.voice ? 1 : s.settings.clipVol;
+    const clipVol = plan.quick ? 0 : plan.mode === 'quotes' || plan.mode === 'stream' || fr.seg.voice ? 1 : s.settings.clipVol;
     const wantMuted = !(s.focused === i && clipVol > 0.001 && this.playing);
     if (el.muted !== wantMuted) el.muted = wantMuted;
     if (!wantMuted) {
-      const vol = Math.min(1, clipVol * fadeGain(tt, plan.duration, ctx.fadeIn, ctx.fadeOut));
-      if (Math.abs(el.volume - vol) > 0.01) el.volume = vol;
+      // the clip's own audio settings (Clip audio panel): level, fades at the cut's ends, bass / treble
+      const rb = clipSpan(plan, fr.seg.clip), k = clipGainAt(clip, tt - rb[0], rb[1] - rb[0]);
+      const vol = clipVol * fadeGain(tt, plan.duration, ctx.fadeIn, ctx.fadeOut) * k;
+      const a = audioOf(clip);
+      if (el._ca || (hasAudioFx(clip) && (vol > 1 || a.bass || a.treble))) {
+        const ch = previewChain(audioCtx(), el, clip);
+        if (ch) { if (el.volume !== 1) el.volume = 1; ch.gain.gain.value = vol; }
+        else if (Math.abs(el.volume - Math.min(1, vol)) > 0.01) el.volume = Math.min(1, vol);
+      } else if (Math.abs(el.volume - Math.min(1, vol)) > 0.01) el.volume = Math.min(1, vol);
     }
 
     if (this.playing && t < plan.duration) {
@@ -271,14 +320,14 @@ export class Player {
     if (next && s.clips[next.clip] && (next.start - tt < 1.2 || next.start < tt)) {
       nextEl = this._el(view, s.clips[next.clip], next.deck, keep);
       keep.push(nextEl);
-      if (nextEl !== el && !nextEl.seeking) {
+      if (nextEl !== el && !s.clips[next.clip].still && !nextEl.seeking) {
         const off = Math.abs(nextEl.currentTime - next.srcStart) > 0.05;
         const soon = next.start - tt < 1.2 && next.start > tt;
         if (off || !nextEl.paused) { nextEl.pause(); seekEl(nextEl, next.srcStart); nextEl._touched = now; }
         else if (soon && now - (nextEl._touched || 0) > 4000) { seekEl(nextEl, next.srcStart); nextEl._touched = now; } // wake a sleeping decoder
       }
     }
-    for (const other of view.pool.values()) if (other !== el && other !== nextEl && !other.paused) other.pause();
+    for (const other of view.pool.values()) if (other !== el && other !== nextEl && other.paused === false) other.pause();
 
     const token = el._frameVersion ?? el.getVideoPlaybackQuality?.().totalVideoFrames ?? el.currentTime;
     const fresh = view.lastEl !== el || el._up !== token || !view.renderer.texCache.has(el);

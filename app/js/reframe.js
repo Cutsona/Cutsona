@@ -14,11 +14,11 @@ import { cameraAt, focusAt, steadyFocusAt, medianOf, gaussSmooth, CAM } from './
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const FRAME_MODES = [
-  ['auto', 'Auto', 'The automatic camera: keeps everyone in frame'],
-  ['main', 'Main person', 'Follow the main person'],
-  ['face', 'Face close-up', 'Close-up on the main person’s face'],
-  ['person', 'Pick a person', 'Click someone in the frame to follow just them'],
-  ['lock', 'Lock here', 'Hold the camera still where you aim it'],
+  ['auto', 'Auto', 'The automatic camera keeps every face in the shot'],
+  ['main', 'Main face', 'Follows the face seen most in this cut, with room around it'],
+  ['face', 'Face close-up', 'Zooms in close on the main face'],
+  ['person', 'Pick a face', 'Follows just the face you pick: click one of the faces below, or a box in the picture'],
+  ['lock', 'Lock here', 'The camera holds still where you aim it'],
 ];
 
 export function framingAt(clip, t) {

@@ -37,4 +37,7 @@ projects/
 
 # the desktop app: built installers, and the FFmpeg / yt-dlp copies it ships with (npm run tools)
 dist/
-vendor/
+/vendor/
+
+# when this build was made (desktop/stamp.js writes it before each installer build)
+build.json

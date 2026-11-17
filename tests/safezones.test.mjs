@@ -10,5 +10,5 @@ test('safe zones only on tall videos', () => {
 test('a title in the caption area is covered, one in the middle is clear', () => {
   assert.ok(coveredShare('tiktok', [0.1, 0.85, 0.6, 0.08]) > 0.9);
   assert.equal(coveredShare('tiktok', [0.2, 0.4, 0.5, 0.1]), 0);
-  for (const k of Object.keys(SAFE_ZONES)) assert.match(safeZoneHtml(k), /safe zones/);
+  for (const k of Object.keys(SAFE_ZONES)) assert.match(safeZoneHtml(k), new RegExp(`class="szu ${k}"`));
 });

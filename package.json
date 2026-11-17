@@ -1,7 +1,7 @@
 {
   "name": "cutsona",
   "productName": "Cutsona",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Turn your clips and a song into beat-synced edits.",
   "main": "desktop/main.js",
   "author": "slaxr",
@@ -17,7 +17,7 @@
     "server": "node server.js",
     "test": "node --test tests/*.test.mjs",
     "tools": "node desktop/fetch-tools.js",
-    "dist": "node desktop/fetch-tools.js && electron-builder --win --publish never"
+    "dist": "node desktop/fetch-tools.js && node desktop/stamp.js && electron-builder --win --publish never && node desktop/stamp.js --done"
   },
   "build": {
     "appId": "app.cutsona.desktop",
@@ -25,7 +25,9 @@
     "copyright": "Copyright © 2026 slaxr",
     "asar": false,
     "compression": "maximum",
-    "electronLanguages": ["en-US"],
+    "electronLanguages": [
+      "en-US"
+    ],
     "directories": {
       "output": "dist"
     },
@@ -34,8 +36,13 @@
       "preview.js",
       "transcription.js",
       "transcribe.py",
+      "translate.py",
+      "scenes.py",
       "updater.js",
+      "viralscan.js",
+      "docmaker.js",
       "version.json",
+      "build.json",
       "app/**/*",
       "desktop/main.js",
       "desktop/preload.js",
@@ -60,7 +67,13 @@
         }
       ],
       "icon": "Cutsona.ico",
-      "artifactName": "Cutsona-Setup-${version}.${ext}"
+      "artifactName": "Cutsona-Setup-${version}.${ext}",
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      }
     },
     "nsis": {
       "oneClick": true,
@@ -76,7 +89,8 @@
         "provider": "github",
         "owner": "Cutsona",
         "repo": "Cutsona",
-        "releaseType": "release"
+        "releaseType": "release",
+        "private": true
       }
     ]
   },

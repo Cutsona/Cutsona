@@ -6,6 +6,7 @@
 const { app, BrowserWindow, utilityProcess, shell, dialog, ipcMain, Menu, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const PACKAGED = app.isPackaged;
@@ -57,6 +58,9 @@ function createWindow(url) {
     width: 1600, height: 960, minWidth: 1100, minHeight: 700, show: false, backgroundColor: '#262628', title: 'Cutsona',
     icon: path.join(ROOT, process.platform === 'win32' ? 'Cutsona.ico' : 'app/brand/icon-512.png'),
     autoHideMenuBar: true,
+    // no plain grey title bar: Cutsona's own header is the title bar (drag it to move the window); Windows keeps
+    // its minimize / maximize / close buttons on the right, colored to match (see ui:titlebar)
+    ...(process.platform === 'win32' ? { titleBarStyle: 'hidden', titleBarOverlay: { color: '#1f1f22', symbolColor: '#f2f0ea', height: 55 } } : {}),
     // backgroundThrottling off: exports keep full speed while Cutsona is minimized or behind other windows
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, backgroundThrottling: false },
   });
@@ -76,7 +80,9 @@ function createWindow(url) {
 }
 
 // ---- the bridge the page uses (desktop/preload.js) ----
-ipcMain.on('app:info', (e) => { e.returnValue = { version: app.getVersion(), packaged: PACKAGED, platform: process.platform }; });
+ipcMain.on('app:info', (e) => { e.returnValue = { version: app.getVersion(), packaged: PACKAGED, platform: process.platform, frameless: process.platform === 'win32' }; });
+// the window buttons follow the page's light / dark look
+ipcMain.on('ui:titlebar', (_e, o) => { try { if (process.platform === 'win32' && win && o) win.setTitleBarOverlay({ color: String(o.color || '#1f1f22'), symbolColor: String(o.symbol || '#f2f0ea'), height: 55 }); } catch {} });
 ipcMain.handle('dialog:folder', async (_e, start) => {
   const r = await dialog.showOpenDialog(win, { title: 'Where should Cutsona save your finished videos?', defaultPath: start || undefined, properties: ['openDirectory', 'createDirectory'] });
   return r.canceled ? null : r.filePaths[0];
@@ -107,8 +113,34 @@ function getUpdater() {
   } catch { updater = null; }
   return updater;
 }
+// ---- new builds made on this computer (desktop/stamp.js): one button, and a pop-up the moment one is ready ----
+// The installed app knows when it was built (build.json). The computer that builds Cutsona keeps a pointer to its
+// Cutsona folder in the app-data folder (dev-source.json); a newer dist/latest-build.json there is an update.
+const OWN_BUILD = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, 'build.json'), 'utf8')); } catch { return null; } })();
+const whenBuilt = (t) => { try { return new Date(t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch { return ''; } };
+function localBuild() {
+  if (!PACKAGED || !OWN_BUILD?.built) return null;
+  try {
+    const { root } = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'dev-source.json'), 'utf8'));
+    if (!root) return null;
+    const j = JSON.parse(fs.readFileSync(path.join(root, 'dist', 'latest-build.json'), 'utf8'));
+    const exe = path.join(root, 'dist', path.basename(String(j.installer || '')));
+    if (!(Number(j.built) > OWN_BUILD.built) || !/\.exe$/i.test(exe) || !fs.existsSync(exe)) return null;
+    return { ...j, exe };
+  } catch { return null; }
+}
+// this copy was built from your own Cutsona folder (so the newest build there is what counts)
+function fromDevSource() {
+  try { return PACKAGED && !!JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'dev-source.json'), 'utf8')).root; } catch { return false; }
+}
+function localInfo(lb) {
+  return { current: `${app.getVersion()} (built ${whenBuilt(OWN_BUILD.built)})`, latest: `${lb.version} (built ${whenBuilt(lb.built)})`, available: true, local: true,
+    notes: [{ version: `New build, ${whenBuilt(lb.built)}`, name: '', date: lb.built, body: lb.notes || '' }], checkedAt: Date.now() };
+}
 ipcMain.handle('update:check', async () => {
   const current = app.getVersion();
+  const lb = localBuild();
+  if (lb) return (lastCheck = localInfo(lb));
   const u = getUpdater();
   if (!u) return { current, available: false, reason: 'not-set-up' };
   try {
@@ -120,10 +152,23 @@ ipcMain.handle('update:check', async () => {
     lastCheck = { current, latest, available, notes, checkedAt: Date.now() };
     return lastCheck;
   } catch (e) {
+    // no GitHub release to compare with, but you have the newest build from your own folder: that's up to date
+    if (fromDevSource()) return (lastCheck = { current, available: false, checkedAt: Date.now() });
     return { current, available: false, checkedAt: Date.now(), error: /net::|ENOTFOUND|ETIMEDOUT|ECONN/i.test(String(e?.message)) ? 'Couldn’t reach GitHub to check for updates.' : 'Couldn’t check for updates right now.' };
   }
 });
 ipcMain.handle('update:install', async (e) => {
+  const lb = localBuild();
+  if (lb) {
+    // the new installer, quietly; it replaces this Cutsona and opens the new one (--force-run)
+    try { e.sender.send('update:state', { ready: true }); } catch {}
+    const child = spawn(lb.exe, ['/S', '--force-run'], { detached: true, stdio: 'ignore', windowsHide: false });
+    child.on('error', () => {});
+    child.unref();
+    quitting = true;
+    setTimeout(() => app.quit(), 500);
+    return true;
+  }
   const u = getUpdater();
   if (!u) throw new Error('Updates aren’t set up in this copy of Cutsona.');
   const send = (s) => { try { e.sender.send('update:state', s); } catch {} };
@@ -139,10 +184,37 @@ ipcMain.handle('update:install', async (e) => {
   return true;
 });
 
+// live: a new build (checked every few seconds, it's one small file) or a new release on GitHub (every 20 minutes)
+// pops up in the open window right away
+let announced = '';
+function announce(info) {
+  const sig = `${info.local ? 'L' : 'G'}${info.latest}`;
+  if (!info.available || sig === announced || !win) return;
+  announced = sig;
+  try { win.webContents.send('update:live', info); } catch {}
+}
+function watchUpdates() {
+  if (!PACKAGED) return;
+  const tickLocal = () => { const lb = localBuild(); if (lb) announce(localInfo(lb)); };
+  setTimeout(tickLocal, 6000); setInterval(tickLocal, 10000);
+  const tickGitHub = async () => {
+    if (localBuild()) return;
+    const u = getUpdater(); if (!u) return;
+    try {
+      const r = await u.checkForUpdates(), current = app.getVersion(), latest = r?.updateInfo?.version || current;
+      if (!newer(latest, current)) return;
+      let notes = await changelogNotes(latest, current);
+      if (!notes.length) notes = [{ version: latest, name: r.updateInfo.releaseName || '', body: String(r.updateInfo.releaseNotes || '').replace(/<[^>]+>/g, ''), date: r.updateInfo.releaseDate }];
+      announce((lastCheck = { current, latest, available: true, notes, checkedAt: Date.now() }));
+    } catch {}
+  };
+  setTimeout(tickGitHub, 60e3); setInterval(tickGitHub, 20 * 60e3);
+}
+
 // ---- life of the app ----
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.whenReady().then(async () => {
-  try { createWindow(await startEngine()); }
+  try { createWindow(await startEngine()); watchUpdates(); }
   catch (e) {
     await dialog.showMessageBox({ type: 'error', title: 'Cutsona', message: 'Cutsona couldn’t start.', detail: `${e.message}\n\nThe details are in:\n${path.join(DATA, 'cutsona.log')}`, buttons: ['Close'] });
     app.quit();

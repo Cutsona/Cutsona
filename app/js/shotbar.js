@@ -9,7 +9,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 const fmt = (s) => { s = Math.max(0, s || 0); const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(1).padStart(4, '0')}`; };
 
-export function initShotBar({ el, player, getView, onChange, onToggle, toast, wantTrack, saveCut, cutOps = {} }) {
+export function initShotBar({ el, player, getView, onChange, onToggle, toast, wantTrack, saveCut, cutOps = {}, wantKeys = () => false }) {
   let si = -1, picking = false;
   el.innerHTML = `
     <div class="sb-frame"><canvas></canvas><div class="sb-hint"></div></div>
@@ -22,6 +22,8 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
       </div>
       <div class="sb-lbl">What the camera captures</div>
       <div class="sb-modes">${FRAME_MODES.map(([k, l, d]) => `<button data-mode="${k}" title="${esc(d)}">${l}</button>`).join('')}</div>
+      <div class="sb-desc"></div>
+      <div class="sb-people"></div>
       <div class="sb-row">
         <label class="sb-zoom"><span>Zoom <b></b></span><input type="range" min="1" max="3" step="0.05" value="1"></label>
         <span class="sb-only">Only this cut</span>
@@ -110,11 +112,12 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
   }
 
   function layoutCanvas(c) {
-    const ar = (c.clip.w || 16) / (c.clip.h || 9), maxW = 330, maxH = 186;
+    // the frame's size follows the shot editor's height (drag the divider above it)
+    const fr = cv.parentElement, ar = (c.clip.w || 16) / (c.clip.h || 9), maxW = fr?.clientWidth || 330, maxH = fr?.clientHeight || 186;
     let w = maxW, h = w / ar;
     if (h > maxH) { h = maxH; w = h * ar; }
     const dpr = devicePixelRatio || 1;
-    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.width = w + 'px'; cv.style.height = h + 'px'; }
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); cv.style.width = w + 'px'; cv.style.height = h + 'px'; }
   }
   let hoverBox = null;
   function boxesAt(c, src) {
@@ -195,13 +198,13 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
     if (m === 'auto') { z > 1.001 ? apply({ mode: 'auto', z }) : apply(null); return; }
     if (m === 'lock') { const w = windowAt(c, timeIn(c)); apply({ mode: 'lock', x: w.cx ?? 0.5, y: w.cy ?? 0.5, z }); return; }
     if (m === 'main' || m === 'face') {
-      if (needPeople(c, false)) toast('Finding people in this clip: the framing follows them as soon as that’s done');
+      if (needPeople(c, false)) toast('Finding the faces in this clip: the framing follows them as soon as that’s done');
       apply({ mode: m, z: m === 'face' ? Math.max(z, 1.8) : z });
       return;
     }
     if (m === 'person') {
-      if (needPeople(c, true)) { toast('Finding everyone in this clip first: then click the person to follow'); render(); return; }
-      if (!boxesAt(c, srcAt(c, timeIn(c))).length) toast('Nobody found at this moment: move to another moment of the cut, or drag the box instead');
+      if (needPeople(c, true)) { toast('Finding the faces in this clip first: then pick one to follow'); render(); return; }
+      if (!boxesAt(c, srcAt(c, timeIn(c))).length) toast('No face at this moment: pick one of the faces below, move to another moment, or drag the box instead');
       picking = true; render();
     }
   });
@@ -212,6 +215,76 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
     if (e) apply({ z }, { keepEntry: true }); else apply({ mode: 'auto', z });
   });
   el.querySelector('.sb-reset').onclick = () => { picking = false; apply(null); };
+  // ---------- the faces in this clip, as pictures: click one to follow that person in this cut ----------
+  function renderPeople(c) {
+    const box = el.querySelector('.sb-people');
+    const tr = c.clip.track, people = tr?.people;
+    const busy = c.clip.trackState === 'running' || c.clip.trackState === 'queued';
+    if (!people || busy) {
+      box.innerHTML = busy
+        ? `<span class="sb-pp-note"><i class="spin"></i>${(c.clip.trackPct || 0) >= 0.99 ? 'Telling the people apart…' : `Scanning the faces… ${Math.round((c.clip.trackPct || 0) * 100)}%`}</span>`
+        : `<button class="small sb-findfaces">Show the faces in this clip</button>`;
+      return;
+    }
+    if (!people.length) { box.innerHTML = '<span class="sb-pp-note">No faces found in this clip. Drag the box to aim instead.</span><button class="small sb-findfaces">Scan again</button>'; return; }
+    const e = entryOf(c), following = e?.mode === 'person' ? e.seed?.face : null;
+    const old = (tr.peopleV || 1) < 2;
+    // every person of the clip, always in the same order: the ones not in this cut are greyed out
+    box.innerHTML = `<span class="sb-pp-lbl">Faces <em>${people.length}</em></span><div class="sb-pp-strip">` + people.map((p) => {
+      const here = p.seen.some((s) => s.t >= c.shotA - 0.05 && s.t <= c.shotB + 0.05);
+      return `<button class="sb-face ${here ? 'here' : 'away'} ${following === p.id ? 'on' : ''}" data-face="${p.id}" title="${esc(p.name)}: in ${Math.round(p.share * 100)}% of the clip${here ? '. In this cut: click to follow' : '. Not in this cut: click to jump to a cut with them'}">
+        <img src="${p.thumb}" alt=""><span>${esc(p.name.replace('Person ', 'P'))}</span></button>`;
+    }).join('') + `</div><button class="small sb-findfaces" title="Look through the clip for faces again${old ? ' (better at telling people apart than the last scan)' : ''}">${old ? 'Rescan (better)' : 'Rescan'}</button>`;
+  }
+  el.querySelector('.sb-people').addEventListener('click', (ev) => {
+    if (!ev.target.closest('.sb-findfaces')) return;
+    const c = cur(); if (!c) return;
+    c.clip.track = null; c.clip.trackState = null; c.clip.trackPromise = null; // a fresh scan
+    wantTrack(c.clip, 'people'); toast('Scanning the faces in this clip…'); renderPeople(c);
+  });
+  el.querySelector('.sb-people').addEventListener('click', (ev) => {
+    const b = ev.target.closest('[data-face]'); if (!b) return;
+    const c = cur(); if (!c) return;
+    const p = c.clip.track?.people?.find((x) => x.id === b.dataset.face); if (!p) return;
+    const inCut = p.seen.filter((s) => s.t >= c.shotA - 0.05 && s.t <= c.shotB + 0.05);
+    if (!inCut.length) { showPerson(c.seg.clip, p.id); return; }
+    const now = srcAt(c, timeIn(c));
+    const s = inCut.reduce((a, x) => (Math.abs(x.t - now) < Math.abs(a.t - now) ? x : a));
+    picking = false;
+    // the same box the picture shows around a face (head and shoulders)
+    apply({ mode: 'person', seed: { t: s.t, x: s.x, y: s.y + s.h * 0.9, h: s.h * 3, face: p.id } });
+    toast(`Following ${p.name} in this cut`);
+  });
+
+  // put the playhead on the cut of this edit where a person of a clip shows up (the nearest to the open cut),
+  // open the shot editor there and follow them. Used by the face buttons here and in the clip list.
+  function showPerson(clipIdx, pid) {
+    const v = getView(); if (!v.plan) return false;
+    const p = v.clips[clipIdx]?.track?.people?.find((x) => x.id === pid); if (!p) return false;
+    const from = si < 0 ? shotAt(player.now()) : si;
+    let best = null;
+    v.plan.segments.forEach((sg, k) => {
+      if (sg.clip !== clipIdx) return;
+      const used = Math.max(sg.srcDur || 0, srcOffset(sg, sg.end - sg.start)), a = sg.srcStart, b = a + used;
+      const hit = p.seen.find((s) => s.t >= a - 0.05 && s.t <= b + 0.05);
+      if (hit && (!best || Math.abs(k - from) < Math.abs(best.k - from))) best = { k, sg, hit };
+    });
+    if (!best) {
+      const times = [...new Set(p.seen.map((s) => fmt(Math.floor(s.t))))].slice(0, 4).join(', ');
+      toast(`${p.name} isn’t in any cut of this edit. They show up at ${times} of the clip: use Swap on a cut to use that part`);
+      return false;
+    }
+    select(best.k, { seek: false });
+    const sg = best.sg, span = sg.end - sg.start;
+    // the playhead goes to the moment they're on screen (about: the cut may play faster or slower)
+    const ratio = Math.max(0.01, srcOffset(sg, span) / span);
+    player.pause(); player.seek(clamp(sg.start + (best.hit.t - sg.srcStart) / ratio, sg.start + 0.02, sg.end - 0.03));
+    const s2 = best.hit;
+    picking = false;
+    apply({ mode: 'person', seed: { t: s2.t, x: s2.x, y: s2.y + s2.h * 0.9, h: s2.h * 3, face: p.id } });
+    toast(`Cut ${best.k + 1}: ${p.name} is here. Following them`);
+    return true;
+  }
 
   // ---------- camera keyframes (a camera move inside this cut, like CapCut) ----------
   // A keyframe is where the camera is at one moment of the cut: aim x, y and zoom z. Add one, move the playhead,
@@ -233,7 +306,7 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
     if (light) { paint(); updateNote(); } else render();
     return true;
   }
-  function addKey() {
+  function addKey(quiet = false) {
     const c = cur(); if (!c) return;
     picking = false;
     const e = entryOf(c), { t, s, o } = nowAt(c);
@@ -249,6 +322,7 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
       onChange(); render();
     }
     const k = entryOf(c).keys.length;
+    if (quiet) return;
     toast(k === 1 ? 'Keyframe 1 set. Move the playhead, then drag or zoom the box to record where the camera goes' : `Keyframe ${keyHere(entryOf(c), o) + 1} of ${k} set`);
   }
   el.querySelector('.sb-kadd').onclick = addKey;
@@ -304,6 +378,7 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
     down.moved = true; picking = false; cv.style.cursor = 'grabbing';
     // grabbing the box moves it; grabbing elsewhere aims straight at that point
     const aim = down.inside ? { x: p.x + down.off.x, y: p.y + down.off.y } : p;
+    if (wantKeys() && entryOf(c)?.mode !== 'keys') addKey(true);
     const e = entryOf(c);
     if (e && e.mode === 'keys') { setKey(c, { x: aim.x, y: aim.y }, true); return; } // records a keyframe at the playhead
     if (e && e.mode === 'lock') { e.x = clamp(aim.x, 0, 1); e.y = clamp(aim.y, 0, 1); onChange(); paint(); updateNote(); }
@@ -313,13 +388,14 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
     const c = cur(); const d = down; down = null; cv.style.cursor = 'grab';
     if (!c || !d || d.moved) { render(); return; }
     const p = posOf(ev), b = boxUnder(c, p);
-    if (b) { picking = false; apply({ mode: 'person', seed: { t: srcAt(c, timeIn(c)), x: b[0], y: b[1], h: b[3] } }); toast('Following that person in this cut'); }
-    else if (picking) toast('Click inside one of the boxes around a person');
+    if (b) { picking = false; apply({ mode: 'person', seed: { t: srcAt(c, timeIn(c)), x: b[0], y: b[1], h: b[3] } }); toast('Following that face in this cut'); }
+    else if (picking) toast('Click inside one of the boxes around a face');
     else if (entryOf(c)?.mode === 'keys') setKey(c, { x: p.x, y: p.y });
     else { const e = entryOf(c); apply({ mode: 'lock', x: p.x, y: p.y, z: e ? e.z || 1 : 1 }); }
   });
+  // Ctrl + scroll zooms the camera; a plain scroll does nothing here (it used to change the zoom by accident)
   cv.addEventListener('wheel', (ev) => {
-    const c = cur(); if (!c) return;
+    const c = cur(); if (!c || !(ev.ctrlKey || ev.metaKey)) return;
     ev.preventDefault();
     const e0 = entryOf(c);
     if (e0?.mode === 'keys') { setKey(c, { z: clamp(keyAim(e0.keys, srcAt(c, timeIn(c))).z * Math.exp(-ev.deltaY * 0.0015), 1, 3) }, true); return; }
@@ -353,7 +429,9 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
       : `Changes only cut ${si + 1} of Edit ${c.v.index + 1}: every other cut and edit keeps its own framing. Exports use it too.` +
         (n ? ` ${n} cut${n > 1 ? 's' : ''} in this edit ${n > 1 ? 'have' : 'has'} your framing (◆ on the timeline).` : '') +
         (!tr && c.clip.trackState === 'running' ? ' Finding people…' : '');
-    hint.textContent = picking ? 'Click the person to follow' : (tr && tr.boxes ? 'Drag to aim, scroll to zoom, click a person to follow' : 'Drag to aim, scroll to zoom');
+    el.querySelector('.sb-desc').textContent = (FRAME_MODES.find((m) => m[0] === mode) || FRAME_MODES[0])[2];
+    renderPeople(c);
+    hint.textContent = picking ? 'Click the face to follow' : (tr && tr.boxes ? 'Drag to aim, Ctrl + scroll to zoom, click a face to follow' : 'Drag to aim, Ctrl + scroll to zoom');
   }
   function render(force = true) {
     const c = cur();
@@ -397,8 +475,46 @@ export function initShotBar({ el, player, getView, onChange, onToggle, toast, wa
     paintTrack(c);
     if (!player.playing) updateNote(); // on / off a keyframe as the playhead moves
   }
+  // the take's picture dragged while this cut is selected: the camera moves the opposite way (the picture follows
+  // the pointer), by the share of the window it's dragged; with camera keyframes it records one at the playhead
+  let aimDrag = null;
+  function dragAim(phase, dx = 0, dy = 0) {
+    const c = cur(); if (!c) return false;
+    if (phase === 'start') {
+      const w = windowAt(c, timeIn(c)); if (w.fit) { toast('This edit uses “Fit + blur”: switch Framing to Fill to move the camera'); return false; }
+      if (wantKeys() && entryOf(c)?.mode !== 'keys') addKey(true);
+      const e = entryOf(c), k = e?.mode === 'keys' ? keyAim(e.keys, srcAt(c, timeIn(c))) : null;
+      aimDrag = { cx: k ? k.x : w.cx ?? 0.5, cy: k ? k.y : w.cy ?? 0.5, ww: Math.max(0.02, w.x1 - w.x0), wh: Math.max(0.02, w.y1 - w.y0) };
+      picking = false; player.pause();
+      return true;
+    }
+    if (!aimDrag) return false;
+    if (phase === 'end') { aimDrag = null; render(); return true; }
+    const x = clamp(aimDrag.cx - dx * aimDrag.ww, 0, 1), y = clamp(aimDrag.cy - dy * aimDrag.wh, 0, 1), e = entryOf(c);
+    if (e && e.mode === 'keys') setKey(c, { x, y }, true);
+    else if (e && e.mode === 'lock') { e.x = x; e.y = y; onChange(); paint(); updateNote(); }
+    else apply({ mode: 'lock', x, y, z: e ? e.z || 1 : 1 });
+    return true;
+  }
+  // the take's picture scrolled while this cut is selected: zoom the camera (a keyframe when it has camera keyframes)
+  function zoomBy(deltaY) {
+    const c = cur(); if (!c) return;
+    if (wantKeys() && entryOf(c)?.mode !== 'keys') addKey(true);
+    const e0 = entryOf(c);
+    if (e0?.mode === 'keys') { setKey(c, { z: clamp(keyAim(e0.keys, srcAt(c, timeIn(c))).z * Math.exp(-deltaY * 0.0015), 1, 3) }, true); return; }
+    const z = clamp((e0 ? e0.z || 1 : 1) * Math.exp(-deltaY * 0.0015), 1, 3);
+    if (e0) apply({ z }, { keepEntry: true }); else apply({ mode: 'auto', z });
+  }
+  function deleteKeyHere() {
+    const c = cur(), e = c && entryOf(c); if (!e || e.mode !== 'keys') return false;
+    const i = keyHere(e, nowAt(c).o); if (i < 0) return false;
+    e.keys.splice(i, 1);
+    if (!e.keys.length) apply(null); else { onChange(); render(); }
+    return true;
+  }
   return {
-    select, close, step, tick, shotAt, deleteSelected: delCut, addKey,
+    dragAim, deleteKeyHere, zoomBy,
+    select, close, step, tick, shotAt, deleteSelected: delCut, addKey, showPerson,
     isOpen: () => !el.hidden, selected: () => (el.hidden ? -1 : si),
     refresh: () => { if (!el.hidden) { const p = getView().plan; if (!p || !p.segments.length) close(); else { si = Math.min(si, p.segments.length - 1); render(false); } } },
   };

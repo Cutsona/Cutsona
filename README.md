@@ -1,56 +1,59 @@
 <p align="center"><img src="brand/banner.png" alt="Cutsona" width="640"></p>
 
-<p align="center"><b>Turn your clips and a song into beat-synced edits.</b><br>
-Cutsona makes takes you can preview side by side and export as MP4s.</p>
+<p align="center"><strong>Beat-synced edits, stream highlights, and narrated videos on Windows.</strong><br>
+Preview takes side by side, refine the cuts on a timeline, and export the one you want.</p>
 
-<p align="center"><a href="https://github.com/Cutsona/Cutsona/releases/latest"><b>Download for Windows</b></a> · <a href="docs/GUIDE.md">Guide</a> · <a href="LICENSE">MIT license</a></p>
+<p align="center"><a href="https://github.com/Cutsona/Cutsona/releases/latest"><strong>Download for Windows</strong></a> · <a href="#install-from-powershell">PowerShell install</a> · <a href="docs/GUIDE.md">User guide</a></p>
 
-<p align="center"><img src="brand/screenshot.png" alt="Cutsona, ready for clips, with four empty takes side by side" width="900"></p>
+![Cutsona Edit Mode with four previews, clip framing controls, and the timeline](brand/screenshot.png)
 
-## What it does
+## Install on Windows
 
-- **Four takes at once.** Add clips and a song, and Cutsona cuts four different edits that play live, side by side. Don't like one? Press **⟳** for a new take.
-- **Cuts on the beat.** Every cut, zoom and effect lands on the song's beats and drops.
-- **Clips Twitch and Kick streams.** **Clipper Mode** finds stream highlights and offers webcam layouts, word-by-word captions, titles, and batch export.
-- **Makes videos in Quick Mode.** Turn a topic or script into a narrated video, or turn a long video into short highlights. Open saved takes again or send a Topic to Video project to either editor.
-- **Finds clips and songs for you.** YouTube, Twitch and Kick clips, exact movie moments, gaming, news and free stock footage, plus free music.
-- **Tells you what might get claimed.** The copyright check shows who owns each clip and song, how likely a post is to be muted or taken down, and the credits to paste.
-- **Fits TikTok, Reels and Shorts.** Safe zones show where each app's buttons and captions will cover your video.
-- **Finishes the video.** Preview caption styles and choose filters, watermarks, keyframes, and fades. Export an MP4 from 360p to 4K in the editor.
-- **Keeps your work.** Save projects and open them again later, with undo and redo for everything.
+Cutsona runs on 64-bit Windows 10 and 11. Download and open the `Cutsona-Setup-*.exe` for the latest version. The installer runs for your account and includes FFmpeg and yt-dlp. [Latest release](https://github.com/Cutsona/Cutsona/releases/latest)
 
-## Install
+### Install from PowerShell
 
-Cutsona runs on Windows 10 and 11.
+Open **PowerShell** or the PowerShell tab in **Windows Terminal**. Once the repository is public, this command works without a GitHub login. It downloads the latest stable installer, verifies its SHA-256 against GitHub's release metadata, and opens the installer. [View the installer script](tools/install.ps1)
 
-1. Download **Cutsona-Setup** (the .exe file) from the [latest release](https://github.com/Cutsona/Cutsona/releases/latest).
-2. Open it. Cutsona installs for your account (no admin needed) and opens.
+```powershell
+& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/Cutsona/Cutsona/main/tools/install.ps1')))
+```
 
-The installer includes FFmpeg and yt-dlp. For releases in this private repository, sign in to GitHub with repository access to download the installer.
+While the repository is private, sign in with repository access to use the installer link above, or use the authenticated PowerShell command below. It requires [GitHub CLI](https://cli.github.com/).
 
-> **"Windows protected your PC"?** The installer isn't code-signed yet, so Windows doesn't know it. Press **More info**, then **Run anyway**. Everything Cutsona does is in this repository for anyone to check.
+```powershell
+gh auth login
+$script = gh api 'repos/Cutsona/Cutsona/contents/tools/install.ps1?ref=main' -H 'Accept: application/vnd.github.raw+json'
+if ($LASTEXITCODE -eq 0) { & ([scriptblock]::Create(($script -join "`n"))) }
+```
 
-For captions, open **Settings → Captions and speech** and press **Set up speech tools** once (it needs [Python](https://www.python.org/downloads/)).
+## Choose a mode
 
-## Use it
-
-1. **Add clips.** Drop video files in, or press **Find clips**.
-2. **Add a song.** Drop an MP3, or press **Find songs**.
-3. **Pick a take and export it.** Your MP4 is saved to `Videos\Cutsona`, which you can change in **Settings**.
-
-To clip a stream, switch to **Clipper Mode** at the top left, then paste a Twitch or Kick link or pick one in **Find clips → Streamers**. To start from a topic or a longer video, switch to **Quick Mode**.
-
-| Key | What it does |
+| Mode | What you can make |
 | --- | --- |
-| Space | Play or pause |
-| G | New takes of all four |
-| R | New take of the selected one |
-| E | Export the selected one |
-| Ctrl+Z / Ctrl+Y | Undo / redo |
-| Ctrl+S | Save the project |
+| **Edit Mode** | Beat-synced videos from your clips and a song. Adjust cuts, framing, captions, filters, and keyframes on the timeline. |
+| **Clipper Mode** | Twitch and Kick highlights with portrait layouts, facecam framing, and word-by-word captions. Export one take or all highlights. |
+| **Quick Mode** | Turn a topic or script into a narrated video, or find the highlights in a long video. Reopen a saved project or send its takes to either editor. |
 
-## Open source
+### Clipper Mode
 
-Cutsona is free and open source under the [MIT license](LICENSE). Bug reports, ideas and pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md) shows how to run it from the code. It's built on FFmpeg, yt-dlp, Electron, MediaPipe and Whisper ([third-party notices](THIRD-PARTY-NOTICES.md)).
+![Clipper Mode previewing portrait takes with the caption and layout controls in the sidebar](brand/clipper-mode.png)
 
-Clips and songs belong to the people who made them. You're responsible for what you download and post.
+### Quick Mode
+
+![Topic to Video with four editable takes, settings on the left, and saved projects on the right](brand/quick-mode.png)
+
+Demo footage in the screenshots uses NASA's [Blue Marble](https://science.nasa.gov/resource/blue-marble-2002/) and [Apollo 8 Earthrise](https://images.nasa.gov/details/as08-14-2383).
+
+## Editing tools
+
+- **Find Clips** searches videos, streamer clips, exact moments, gaming, news, and stock footage. Preview and trim a clip before adding it.
+- **Find Songs** shows track previews and waveforms. You can use your own audio too.
+- **Caption style previews and safe zones** show how text looks and where platform controls might cover it.
+- **Saved projects** keep your takes, cuts, and settings. Edit Mode and Clipper Mode export MP4s from 360p to 4K.
+
+For automatic captions on local videos, open **Settings → Captions and speech** and choose **Set up speech tools**. [User guide](docs/GUIDE.md#captions)
+
+## Source and credits
+
+Cutsona is licensed under MIT. [License](LICENSE) · [Contributing](CONTRIBUTING.md) · [Third-party notices](THIRD-PARTY-NOTICES.md)

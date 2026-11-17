@@ -14,7 +14,7 @@ Thanks for helping. Bug reports, ideas and pull requests are all welcome.
 - `app/` is the whole interface: plain HTML, CSS and JavaScript modules, no build step.
 - `server.js` is the engine: search, downloads, FFmpeg, projects. It runs inside the desktop app (`desktop/main.js`),
   or on its own with `npm run server` in a browser.
-- `docs/GUIDE.md` explains every feature; `docs/MAINTAINING.md` explains releases.
+- [The user guide](docs/GUIDE.md) covers editing features. [Release instructions](RELEASING.md) cover builds and publishing.
 
 ## Pull requests
 - Keep them focused on one change, and run `npm test` first.

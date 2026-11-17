@@ -48,6 +48,7 @@ jobs:
           $title = ([regex]::Match($log, "(?m)^##\s+v?$esc\b\s*[-:]?\s*(.*)$")).Groups[1].Value.Trim()
           if (-not $title -or -not $notes) { throw "Add release notes for $v to CHANGELOG.md." }
           $notes += "`n`n**Install** by downloading ``Cutsona-Setup-$v.exe`` below and opening it."
+          $notes += " [PowerShell install instructions](https://github.com/Cutsona/Cutsona#install-from-powershell)."
           [IO.File]::WriteAllText("$PWD/notes.md", $notes, (New-Object Text.UTF8Encoding $false))
           $name = "Cutsona $v" + $(if ($title) { " - $title" } else { '' })
           gh release create "v$v" "dist/Cutsona-Setup-$v.exe" "dist/Cutsona-Setup-$v.exe.blockmap" "dist/latest.yml" --verify-tag --title $name --notes-file notes.md --latest

@@ -1,6 +1,13 @@
 # Cutsona guide
 
-Everything Cutsona does, in more detail. For installing, see the [README](../README.md).
+For the Windows installer and PowerShell commands, see [Install on Windows](../README.md#install-on-windows).
+
+## Modes
+
+- **Edit Mode** creates beat-synced takes from your clips and song. Use the timeline to refine cuts, framing, keyframes, captions, and fades.
+- **Clipper Mode** makes highlights from Twitch and Kick clips, with portrait layouts, facecam framing, and caption controls.
+- **Quick Mode → Topic to video** builds a narrated video from a topic or your own script. Set the length, voice, pictures, music, captions, and filter in the left sidebar. After the takes are ready, use the timeline to swap footage or update captions. The right sidebar lists your saved Quick projects.
+- **Quick Mode → Long video to clips** takes a source from Find Clips, a local file, or a pasted link. Choose the highlight length and layout, preview the results, and export one or all of them in the same tab.
 
 ## Opening Cutsona
 Use the Cutsona shortcut on your Desktop or Start menu. Cutsona is one window: its engine (searching, downloading,
@@ -28,15 +35,14 @@ Where things are kept:
 * **Settings** (gear, top right): the folder finished videos save to (Choose folder…, or type a
   path), Dark / Light / Match Windows theme, and the accent color (any color, not just yellow).
   The folder choice is kept in `cutsona-settings.json`; the look is kept in the browser.
-* **Copyright check**: each clip and song gets a badge (Free, Credit, Your file, Limited, Owned, Claim risk), and
-  the **©** note at the top opens the details: who owns what, why, and the credits to paste into your post.
+* **Copyright check**: clips and songs show badges for their source and license information.
   It goes by where each one came from and its license, and asks YouTube about its own videos (a Creative
   Commons license, or a released song inside). It can't hear or see the footage, so it's a guide, not a promise.
   Exporting something likely to be claimed shows a heads-up once; it never stops the export.
 * **Safe zones** (next to the view buttons): shade where TikTok, Reels or Shorts put their buttons, name and
   caption over a 9:16 video. If the hook text, banner or watermark sits under them, the take says so. The
   shading is only on the previews, never in your video.
-* **Stream clips → Export all** saves every highlight Cutsona found, one after another, each with its own title.
+* **Clipper Mode → Export all** saves every highlight Cutsona found, one after another.
 * **Settings → Check sources** asks every site Find clips and Find songs use for a few results, and shows which
   ones are working, slow or down. When one is down, that's on the site's side, not your PC.
 * The edit controls stay greyed out until you add a clip or a song.
@@ -47,7 +53,7 @@ Where things are kept:
 * **Formats**: 9:16, 4:5, 1:1, 16:9, 3:4, 4:3, 2:3, 21:9, or a custom ratio.
   **Export quality**: 360p up to 4K, at 30 or 60 fps.
 * **Watermark**: text (font, color, style, size, see-through) or a logo picture. Drag it on any take
-  to put it anywhere. In Stream clips, the Twitch / Kick banner can be dragged anywhere too.
+  to put it anywhere. In Clipper Mode, the Twitch or Kick banner can be dragged too.
 * **Timeline**: a time ruler on top, then named rows: **Card** (the take's card-motion keyframes),
   **Camera** (camera-move keyframes inside each cut; a plain bar = a cut with your framing),
   **Song** (beats; pink = drops) and **Cuts** (numbered). Both keyframe rows work the same way:
@@ -119,10 +125,9 @@ if you prefer to keep more of a wide shot visible, with blurred video filling th
 
 ## Captions
 **Captions → Off / On** is available in the main controls and each edit's ⚙ panel. Captions
-start off. When enabled, they use short phrases (up to five words), a bold outline, and timed
-word highlights inspired by GitHubReelMaker. Choose Yellow Pop, Cyan, or White. Preview and
-export use the same source-time captions, including during cuts and speed changes. Hook text
-remains a separate optional title.
+start off in Edit Mode. Each mode shows a sample by the caption style picker. Choose a style such as
+Yellow Pop, Pure White Crisp, or Stream Word where available. Edit and Clipper previews and exports use
+source-time captions, including during cuts and speed changes. Hook text is an optional title.
 
 Speech analysis runs locally even with captions off, because sentence timing improves clip
 selection. Timings are cached by the audio content.

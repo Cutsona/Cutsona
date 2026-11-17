@@ -13,18 +13,10 @@ Cutsona runs on 64-bit Windows 10 and 11. Download and open the `Cutsona-Setup-*
 
 ### Install from PowerShell
 
-Open **PowerShell** or the PowerShell tab in **Windows Terminal**. Once the repository is public, this command works without a GitHub login. It downloads the latest stable installer, verifies its SHA-256 against GitHub's release metadata, and opens the installer. [View the installer script](tools/install.ps1)
+Run this in **PowerShell** or the PowerShell tab in **Windows Terminal**. It downloads the latest stable installer, verifies its SHA-256 against GitHub's release metadata, and opens it. [View the installer script](tools/install.ps1)
 
 ```powershell
 & ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/Cutsona/Cutsona/main/tools/install.ps1')))
-```
-
-While the repository is private, sign in with repository access to use the installer link above, or use the authenticated PowerShell command below. It requires [GitHub CLI](https://cli.github.com/).
-
-```powershell
-gh auth login
-$script = gh api 'repos/Cutsona/Cutsona/contents/tools/install.ps1?ref=main' -H 'Accept: application/vnd.github.raw+json'
-if ($LASTEXITCODE -eq 0) { & ([scriptblock]::Create(($script -join "`n"))) }
 ```
 
 ## Choose a mode

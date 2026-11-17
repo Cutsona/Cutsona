@@ -11,6 +11,14 @@ GitHub Actions builds the Windows installer when a version tag is pushed. The wo
 
 While the repository is private, download updates from GitHub Releases while signed in with repository access. From v1.2.0 onward, the in-app updater can also access private releases when Cutsona is launched with a `GH_TOKEN` or `GITHUB_TOKEN` environment variable that has read access to the repository. Keep credentials out of source files and installers.
 
+To run the PowerShell installer against a private release, sign in with [GitHub CLI](https://cli.github.com/) using an account with repository access.
+
+```powershell
+gh auth login
+$script = gh api 'repos/Cutsona/Cutsona/contents/tools/install.ps1?ref=main' -H 'Accept: application/vnd.github.raw+json'
+if ($LASTEXITCODE -eq 0) { & ([scriptblock]::Create(($script -join "`n"))) }
+```
+
 ## Signing (so Windows doesn't warn people)
 
 Without a code-signing certificate the installer is **unsigned**: Windows SmartScreen shows

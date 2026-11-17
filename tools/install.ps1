@@ -18,7 +18,7 @@ try {
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers $headers -TimeoutSec 30
 } catch {
     if (!(Get-Command gh -ErrorAction SilentlyContinue)) {
-        throw "GitHub could not open the latest Cutsona release. If the repository is private, install GitHub CLI, sign in with repository access, and use the authenticated command in the README."
+        throw "GitHub could not open the latest Cutsona release. For private repository access, see the authenticated command in RELEASING.md."
     }
     $result = gh api "repos/$repo/releases/latest"
     if ($LASTEXITCODE -ne 0) { throw 'GitHub CLI could not open the latest Cutsona release. Check gh auth status and repository access.' }
